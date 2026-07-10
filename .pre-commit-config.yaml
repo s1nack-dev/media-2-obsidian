@@ -1,0 +1,46 @@
+minimum_pre_commit_version: "3.7.0"
+
+repos:
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        name: Bandit (Python security)
+        args: ["-lll", "-c", "youtube-obsidian-pipeline/pyproject.toml"]
+        additional_dependencies: ["bandit[toml]"]
+
+  - repo: local
+    hooks:
+      - id: hadolint
+        name: Hadolint (Dockerfile lint)
+        language: docker_image
+        entry: ghcr.io/hadolint/hadolint:v2.14.0 hadolint
+        types: [dockerfile]
+
+      - id: trivy-docker
+        name: Trivy (Docker configuration scan)
+        language: docker_image
+        entry: >-
+          aquasec/trivy:0.70.0 config --config /src/trivy.yaml
+          --ignorefile /src/.trivyignore --cache-dir /tmp/trivy-cache
+          --skip-version-check /src/youtube-obsidian-pipeline
+        files: ^youtube-obsidian-pipeline/(Dockerfile|docker/.*\.ya?ml)$
+        pass_filenames: false
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets (staged files)
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: ^(\.secrets\.baseline|youtube-obsidian-pipeline/uv\.lock)$
+
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.95.0
+    hooks:
+      - id: trufflehog
+        name: TruffleHog (offline Git change scan)
+        entry: >-
+          trufflehog git file://. --since-commit HEAD
+          --results=unknown,unverified --fail --no-verification
+          --trust-local-git-config

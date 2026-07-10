@@ -1,0 +1,20 @@
+# IDE
+.idea/
+
+# Pipeline secrets and runtime files
+youtube-obsidian-pipeline/.env
+youtube-obsidian-pipeline/config.yaml
+youtube-obsidian-pipeline/client_secret.json
+youtube-obsidian-pipeline/token.json
+youtube-obsidian-pipeline/state.json
+youtube-obsidian-pipeline/repos/
+youtube-obsidian-pipeline/pipeline.log
+youtube-obsidian-pipeline/server.log
+youtube-obsidian-pipeline/host_bridge.log
+youtube-obsidian-pipeline/.host_bridge.pid
+
+# Python
+__pycache__/
+.venv/
+*.srt
+/.codex/config.toml

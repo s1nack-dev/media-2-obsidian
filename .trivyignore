@@ -1,0 +1,3 @@
+# The container writes to host bind-mounted Git repositories whose UID/GID is
+# deployment-specific. Running as non-root requires per-host ownership setup.
+DS-0002

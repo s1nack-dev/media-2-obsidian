@@ -1,0 +1,96 @@
+# Containerized deployment: cloudflared (tunnel), pipeline-server (webhook
+# mode), pipeline-fetch (playlist polling, fetch_playlist.py --loop).
+#
+# NOT containerized: host_bridge.py - it needs Parakeet/MLX (Metal/Neural
+# Engine access, no Linux wheels) and the Claude CLI's subscription OAuth
+# (tied to this Mac's keychain), neither of which a container can do. Run
+# it natively (see launchd/) before starting these services - the
+# pipeline containers call it over HTTP via host.docker.internal and will
+# fail every job until it's up.
+#
+# No 1Password CLI/Service Account inside these containers: GITHUB_TOKEN,
+# BRIDGE_AUTH_TOKEN, and WEBHOOK_AUTH_TOKEN are resolved on the HOST
+# (already authenticated via the desktop app's CLI integration) via
+# `op run --env-file` before `docker compose` ever runs, then passed
+# straight through as plain env vars - see core.py's resolve_secret().
+#
+# config.yaml, state.json, and token.json are bind-mounted from the
+# parent directory so there's exactly one copy shared between the native
+# host_bridge.py and these containers - no config drift. The two repo
+# clone directories are bind-mounted at the SAME absolute paths named in
+# config.yaml's subtitles_repo_path/vault_repo_path, for the same reason
+# (so config.yaml doesn't need container-specific path overrides).
+#
+# Usage:
+#   cp ../.env.example ../.env
+#   # fill in TUNNEL_TOKEN, GITHUB_TOKEN, BRIDGE_AUTH_TOKEN,
+#   # WEBHOOK_AUTH_TOKEN (all as op:// references - see .env.example),
+#   # and the two *_REPO_HOST_PATH vars (must match config.yaml's repo
+#   # paths exactly)
+#
+#   # These are op:// references, not raw secrets - `docker compose
+#   # --env-file` does plain string substitution and does NOT resolve
+#   # op:// refs, so this has to go through `op run` first to inject the
+#   # real resolved values into the environment `docker compose` then
+#   # reads from (no --env-file flag needed on the compose command itself
+#   # once that's done):
+#   op run --env-file ../.env -- docker compose up -d --build
+#
+# Then, in the Cloudflare Zero Trust dashboard, point the tunnel's Public
+# Hostname at http://pipeline-server:8080 (the compose service name -
+# cloudflared and pipeline-server share this compose network directly,
+# host.docker.internal is no longer in the loop for that hop).
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    # --no-autoupdate: don't let cloudflared restart itself mid-container
+    # to self-update - `restart: unless-stopped` plus re-pulling the
+    # `latest` image tag is how this image should get updates instead.
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - pipeline
+
+  pipeline-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: youtube-obsidian-pipeline
+    restart: unless-stopped
+    command: ["python", "server.py", "--config", "config.yaml", "--host", "0.0.0.0"]
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
+      - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN}
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - ../state.json:/app/state.json
+      - ../token.json:/app/token.json
+      - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
+      - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
+    networks:
+      - pipeline
+
+  pipeline-fetch:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: youtube-obsidian-pipeline
+    restart: unless-stopped
+    command: ["python", "fetch_playlist.py", "--config", "config.yaml", "--loop"]
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - ../state.json:/app/state.json
+      - ../token.json:/app/token.json
+      - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
+      - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
+    networks:
+      - pipeline
+
+networks:
+  pipeline:
