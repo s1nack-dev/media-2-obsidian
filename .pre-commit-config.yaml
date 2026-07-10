@@ -11,6 +11,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: pytest
+        name: Pytest (unit tests)
+        entry: uv run --project youtube-obsidian-pipeline --extra test pytest -q
+        language: system
+        files: ^youtube-obsidian-pipeline/(.*\.py|pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+
       - id: hadolint
         name: Hadolint (Dockerfile lint)
         language: docker_image
