@@ -41,14 +41,14 @@ import urllib.request
 from difflib import get_close_matches
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import defusedxml.ElementTree as ET
 
 import bridge_client
 from core import (
-    YTDLP_TIMEOUT_SECONDS, build_note, commit_and_push, ensure_repo, load_config, resolve_secret, slugify,
-    srt_to_plain_text, validate_public_url,
+    YTDLP_TIMEOUT_SECONDS, build_note, commit_and_push, ensure_repo, load_config, resolve_and_validate_url,
+    resolve_secret, slugify, srt_to_plain_text, validate_public_url,
 )
 
 logging.basicConfig(
@@ -244,31 +244,125 @@ def is_direct_media_url(url: str) -> bool:
     return any(path.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS)
 
 
+def _sanitize_filename(raw_filename: str) -> str:
+    """
+    Sanitize a filename derived from a URL to prevent path traversal.
+
+    Parameters:
+        raw_filename (str): Raw filename from URL path.
+
+    Returns:
+        str: Sanitized filename safe for use in file paths, or a default if empty/unsafe.
+    """
+    # Take only the basename (no directory components)
+    basename = os.path.basename(raw_filename)
+
+    # Reject dangerous values
+    if not basename or basename in (".", ".."):
+        return "download"
+
+    # Remove any remaining path separators and dangerous characters
+    sanitized = basename.replace(os.sep, "_").replace(os.altsep or "", "_")
+
+    # Ensure it doesn't start with a dot (hidden file) or dash (could be interpreted as flag)
+    sanitized = sanitized.lstrip(".-")
+
+    # If sanitization left nothing useful, use default
+    return sanitized if sanitized else "download"
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    Disables urllib's automatic redirect-following. Returning None from
+    redirect_request() causes the redirect handlers to raise HTTPError with
+    the original 3xx status instead of transparently issuing a second,
+    unvalidated request - which is what let SSRF-via-redirect bypass
+    validate_public_url() before.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_pinned(url: str, timeout: int) -> tuple:
+    """
+    Validate url, resolve it to an approved public IP, and open a connection
+    pinned to that IP (correct Host header preserved) without following
+    redirects.
+
+    Returns:
+        tuple: (response, hostname) - response is the open HTTPResponse.
+    """
+    validated_ip, hostname = resolve_and_validate_url(url)
+
+    parsed = urlparse(url)
+    netloc = f"{validated_ip}:{parsed.port}" if parsed.port else validated_ip
+    pinned_url = parsed._replace(netloc=netloc).geturl()
+
+    req = Request(pinned_url, headers={**_HTTP_HEADERS, "Host": hostname})
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    return opener.open(req, timeout=timeout), hostname
+
+
+def _download_with_redirect_validation(url: str, dest: Path, max_redirects: int = 5) -> None:
+    """
+    Download a file while validating every redirect hop against SSRF protection.
+
+    Parameters:
+        url (str): Initial URL to download.
+        dest (Path): Destination file path.
+        max_redirects (int): Maximum number of redirects to follow.
+
+    Raises:
+        ValueError: If a redirect chain exceeds max_redirects or any hop fails validation.
+    """
+    current_url = url
+
+    for _ in range(max_redirects + 1):
+        try:
+            resp, _hostname = _open_pinned(current_url, timeout=1800)
+        except urllib.error.HTTPError as e:
+            if e.code not in (301, 302, 303, 307, 308):
+                raise
+            location = e.headers.get("Location")
+            if not location:
+                raise ValueError(f"Redirect response {e.code} without Location header") from e
+            if not location.startswith(("http://", "https://")):
+                location = urllib.parse.urljoin(current_url, location)
+            log.info("Following redirect from %s to %s", current_url, location)
+            current_url = location
+            continue
+
+        # No redirect (validated, connected, and pinned) - download the response
+        with resp, open(dest, "wb") as f:
+            shutil.copyfileobj(resp, f)
+        return
+
+    raise ValueError(f"Too many redirects (>{max_redirects}) when downloading {url}")
+
+
 def download_direct_file(url: str, workdir: Path) -> Path:
     """
     Download a direct media resource to the working directory.
-    
+
     Parameters:
     	url (str): URL of the media resource.
     	workdir (Path): Directory where the downloaded file is saved.
-    
+
     Returns:
     	Path: Path to the downloaded media file.
     """
-    validate_public_url(url)
     workdir.mkdir(parents=True, exist_ok=True)
-    filename = Path(urlparse(url).path).name or "download"
+
+    # Extract and sanitize filename to prevent path traversal
+    raw_filename = Path(urlparse(url).path).name or "download"
+    filename = _sanitize_filename(raw_filename)
+
     dest = workdir / filename
-    # Disable automatic redirects to prevent redirect-based SSRF bypasses
-    req = Request(url, headers=_HTTP_HEADERS)
-    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
-    opener.addheaders = list(_HTTP_HEADERS.items())
-    with opener.open(req, timeout=1800) as resp:
-        # Check for redirects and validate each hop
-        if resp.url != url:
-            validate_public_url(resp.url)
-        with open(dest, "wb") as f:
-            shutil.copyfileobj(resp, f)
+
+    # Download with per-redirect validation
+    _download_with_redirect_validation(url, dest)
+
     return dest
 
 
@@ -279,20 +373,43 @@ _OVERCAST_RSS_LINK_RE = re.compile(r'href="([^"]+)"\s*><img src="/img/badge-rss\
 _OVERCAST_EPISODE_TITLE_RE = re.compile(r'<h2[^>]*class="title"[^>]*>([^<]+)</h2>')
 
 
+def _safe_urlopen_with_validation(url: str, timeout: int = 30) -> bytes:
+    """
+    Open a URL with IP pinning to prevent DNS rebinding, without following redirects.
+
+    Parameters:
+        url (str): URL to fetch.
+        timeout (int): Request timeout in seconds.
+
+    Returns:
+        bytes: Response body.
+
+    Raises:
+        ValueError: If validation fails or a redirect is encountered.
+    """
+    try:
+        resp, _hostname = _open_pinned(url, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            raise ValueError(f"URL {url} returned redirect {e.code} (use redirect-aware download)") from e
+        raise
+    with resp:
+        return resp.read()
+
+
 def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
     """
     Resolve an Overcast episode page to its title and audio enclosure URL.
-    
+
     Parameters:
         url (str): Overcast episode page URL.
-    
+
     Returns:
         tuple[str, str] | None: Episode title and validated enclosure URL, or None
         if the page, feed, or matching episode cannot be resolved.
     """
     try:
-        validate_public_url(url)
-        page_html = urlopen(Request(url, headers=_HTTP_HEADERS), timeout=30).read().decode("utf-8", errors="ignore")
+        page_html = _safe_urlopen_with_validation(url, timeout=30).decode("utf-8", errors="ignore")
 
         title_match = _OVERCAST_EPISODE_TITLE_RE.search(page_html)
         rss_match = _OVERCAST_RSS_LINK_RE.search(page_html)
@@ -303,8 +420,7 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
         episode_title = html.unescape(title_match.group(1)).strip()
         feed_url = html.unescape(rss_match.group(1)).strip()
 
-        validate_public_url(feed_url)
-        feed_xml = urlopen(Request(feed_url, headers=_HTTP_HEADERS), timeout=30).read()
+        feed_xml = _safe_urlopen_with_validation(feed_url, timeout=30)
         root = ET.fromstring(feed_xml)
 
         episodes = {}

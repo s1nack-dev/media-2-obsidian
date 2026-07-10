@@ -193,7 +193,7 @@ def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 def validate_public_url(url: str) -> None:
     """
     Validate that a URL uses HTTP or HTTPS and resolves exclusively to public IP addresses.
-    
+
     Raises:
         ValueError: If the URL has an unsupported scheme, lacks a hostname, cannot
             be resolved, or resolves to a private, reserved, or metadata IP address.
@@ -210,7 +210,7 @@ def validate_public_url(url: str) -> None:
     try:
         addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except socket.gaierror as e:
-        raise ValueError(f"Could not resolve hostname {hostname!r}: {e}")
+        raise ValueError(f"Could not resolve hostname {hostname!r}: {e}") from e
 
     resolved_ips = {info[4][0] for info in addr_info}
     for ip_str in resolved_ips:
@@ -224,6 +224,55 @@ def validate_public_url(url: str) -> None:
                 f"URL {url!r} resolves to private/reserved IP {ip_str} "
                 "(loopback, private, link-local, multicast, cloud metadata, etc.) - rejected for SSRF protection"
             )
+
+
+def resolve_and_validate_url(url: str) -> tuple[str, str]:
+    """
+    Resolve a URL's hostname to a validated public IP and return both the IP and the hostname.
+
+    This enables IP pinning to prevent DNS rebinding attacks (TOCTOU gap between
+    validation and actual connection).
+
+    Parameters:
+        url (str): The URL to resolve and validate.
+
+    Returns:
+        tuple[str, str]: A tuple of (validated_ip, hostname) for use in IP-pinned connections.
+
+    Raises:
+        ValueError: If the URL is invalid or resolves to a private/reserved IP.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"URL scheme must be http or https, got {parsed.scheme!r}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL has no hostname")
+
+    # Resolve hostname to IPs immediately before connection
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise ValueError(f"Could not resolve hostname {hostname!r}: {e}") from e
+
+    # Pick the first resolved IP and validate it
+    if not addr_info:
+        raise ValueError(f"No addresses resolved for hostname {hostname!r}")
+
+    ip_str = addr_info[0][4][0]
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError as e:
+        raise ValueError(f"Invalid IP address {ip_str!r} for hostname {hostname!r}") from e
+
+    if _is_private_ip(ip):
+        raise ValueError(
+            f"URL {url!r} resolves to private/reserved IP {ip_str} "
+            "(loopback, private, link-local, multicast, cloud metadata, etc.) - rejected for SSRF protection"
+        )
+
+    return ip_str, hostname
 
 
 # --------------------------------------------------------------------------
@@ -458,18 +507,32 @@ def _sanitize_git_output(text: str) -> str:
     return re.sub(r"x-access-token:[^@]+@", "x-access-token:REDACTED@", text)
 
 
+GIT_TIMEOUT_SECONDS = 300
+
+
 def run_git(args: list[str], cwd: Path) -> None:
     """
     Run a Git command in the specified directory.
-    
+
     Parameters:
     	args (list[str]): Arguments to pass to Git.
     	cwd (Path): Directory in which to run the command.
-    
+
     Raises:
-    	RuntimeError: If Git exits with a nonzero status.
+    	RuntimeError: If Git exits with a nonzero status or times out.
     """
-    result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as e:
+        # Sanitize command and any available output before raising
+        sanitized_args = [_sanitize_git_output(arg) for arg in args]
+        sanitized_stdout = _sanitize_git_output(e.stdout.decode("utf-8", errors="replace") if e.stdout else "")
+        sanitized_stderr = _sanitize_git_output(e.stderr.decode("utf-8", errors="replace") if e.stderr else "")
+        raise RuntimeError(
+            f"git {' '.join(sanitized_args)} timed out after {GIT_TIMEOUT_SECONDS} seconds. "
+            f"stdout: {sanitized_stdout[:500]}, stderr: {sanitized_stderr[:500]}"
+        )
+
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "(no output)").strip()
         sanitized_detail = _sanitize_git_output(detail)
@@ -560,22 +623,22 @@ def build_note(title: str, source_type: str, source_url: str | None, video_id: s
                 published_at: str | None, subtitle_github_url: str, summary: str,
                 content_tags: list[str] | None = None) -> str:
     """
-                Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
-                
-                Parameters:
-                	title (str): Note title.
-                	source_type (str): Type of the source.
-                	source_url (str | None): Optional source URL.
-                	video_id (str | None): Optional video identifier.
-                	published_at (str | None): Optional publication timestamp.
-                	subtitle_github_url (str): URL to the subtitles on GitHub.
-                	summary (str): Summary content for the note.
-                	content_tags (list[str] | None): Optional additional tags.
-                
-                Returns:
-                	str: Complete Obsidian note in Markdown format.
-                """
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
+
+    Parameters:
+        title (str): Note title.
+        source_type (str): Type of the source.
+        source_url (str | None): Optional source URL.
+        video_id (str | None): Optional video identifier.
+        published_at (str | None): Optional publication timestamp.
+        subtitle_github_url (str): URL to the subtitles on GitHub.
+        summary (str): Summary content for the note.
+        content_tags (list[str] | None): Optional additional tags.
+
+    Returns:
+        str: Complete Obsidian note in Markdown format.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     tags = ["video-summary", source_type]
     for tag in content_tags or []:
