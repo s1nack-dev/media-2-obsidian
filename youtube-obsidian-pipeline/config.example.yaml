@@ -50,8 +50,9 @@ github:
   vault_branch: "main"
   vault_notes_dir: "YouTube Summaries"         # subfolder inside the vault repo
 
-  # A GitHub Personal Access Token with "repo" (or fine-grained contents:write)
-  # permission on both repos above. Fetched from 1Password at runtime.
+  # A GitHub Personal Access Token. Recommended: a fine-grained token
+  # restricted to the two repos above with Contents: Read and write permission
+  # only. Fetched from 1Password at runtime.
   token_op_ref: "op://vault/item/credential"
 
   commit_author_name: "youtube-pipeline-bot"
@@ -85,6 +86,12 @@ notifications:
     to_addr: "you@gmail.com"
 
 state_file: "state.json"
+
+# Inter-process lock file - serializes process_input() calls across
+# pipeline-server and pipeline-fetch containers to prevent races on shared
+# state.json and git repos. Must be bind-mounted into containers if running
+# containerized (see docker/docker-compose.yml).
+lock_file: "pipeline.lock"
 
 webhook:
   # Used only by server.py (webhook mode - triggering processing over the

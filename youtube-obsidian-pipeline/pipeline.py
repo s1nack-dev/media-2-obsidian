@@ -37,15 +37,18 @@ import subprocess
 import sys
 import tempfile
 import traceback
-import xml.etree.ElementTree as ET
+import urllib.request
 from difflib import get_close_matches
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+import defusedxml.ElementTree as ET
+
 import bridge_client
 from core import (
-    build_note, commit_and_push, ensure_repo, load_config, resolve_secret, slugify, srt_to_plain_text,
+    YTDLP_TIMEOUT_SECONDS, build_note, commit_and_push, ensure_repo, load_config, resolve_secret, slugify,
+    srt_to_plain_text, validate_public_url,
 )
 
 logging.basicConfig(
@@ -116,7 +119,12 @@ def _ytdlp_download_subs(url: str, out_basename: str, languages: list[str], work
         "yt-dlp", "--skip-download", "--write-subs", "--write-auto-sub",
         "--sub-langs", lang_arg, "--convert-subs", "srt", "-o", out_tmpl, url,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        log.warning("yt-dlp subtitle download timed out for %s after %d seconds", url, YTDLP_TIMEOUT_SECONDS)
+        return None
+
     if result.returncode != 0:
         log.warning("yt-dlp failed for %s: %s", url, result.stderr[-500:])
 
@@ -155,7 +163,7 @@ def download_audio_via_ytdlp(url: str, workdir: Path) -> Path | None:
         "yt-dlp", "-f", "bestaudio/best", "--extract-audio", "--audio-format", "mp3",
         "-o", out_tmpl, url,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT_SECONDS)
     if result.returncode != 0:
         log.warning("yt-dlp audio download failed for %s: %s", url, result.stderr[-500:])
         return None
@@ -171,12 +179,21 @@ def is_direct_media_url(url: str) -> bool:
 def download_direct_file(url: str, workdir: Path) -> Path:
     """Downloads a URL known to be a direct media file. Sends a normal
     browser-ish User-Agent since some CDNs (e.g. podcast hosts) reject
-    Python's default urllib UA."""
+    Python's default urllib UA. Validates URL for SSRF protection first."""
+    validate_public_url(url)
     workdir.mkdir(parents=True, exist_ok=True)
     filename = Path(urlparse(url).path).name or "download"
     dest = workdir / filename
-    with urlopen(Request(url, headers=_HTTP_HEADERS), timeout=1800) as resp, open(dest, "wb") as f:
-        shutil.copyfileobj(resp, f)
+    # Disable automatic redirects to prevent redirect-based SSRF bypasses
+    req = Request(url, headers=_HTTP_HEADERS)
+    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+    opener.addheaders = list(_HTTP_HEADERS.items())
+    with opener.open(req, timeout=1800) as resp:
+        # Check for redirects and validate each hop
+        if resp.url != url:
+            validate_public_url(resp.url)
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(resp, f)
     return dest
 
 
@@ -191,13 +208,15 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
     """Resolves an overcast.fm episode page to (episode_title, mp3_url) by
     finding the podcast's RSS feed link on the page, then matching this
     episode's title against the feed's <item> titles to get the real
-    <enclosure> (mp3) URL - always audio, never video.
+    <enclosure> (mp3) URL - always audio, never video. Validates all URLs
+    for SSRF protection.
 
     Returns None if any step fails (no RSS link found, feed unreachable,
-    no matching item), so the caller can fall back to generic link
-    handling instead of failing outright.
+    no matching item, SSRF check fails), so the caller can fall back to
+    generic link handling instead of failing outright.
     """
     try:
+        validate_public_url(url)
         page_html = urlopen(Request(url, headers=_HTTP_HEADERS), timeout=30).read().decode("utf-8", errors="ignore")
 
         title_match = _OVERCAST_EPISODE_TITLE_RE.search(page_html)
@@ -209,6 +228,7 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
         episode_title = html.unescape(title_match.group(1)).strip()
         feed_url = html.unescape(rss_match.group(1)).strip()
 
+        validate_public_url(feed_url)
         feed_xml = urlopen(Request(feed_url, headers=_HTTP_HEADERS), timeout=30).read()
         root = ET.fromstring(feed_xml)
 
@@ -224,11 +244,15 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
                 episodes[item_title] = mp3_url
 
         if episode_title in episodes:
-            return episode_title, episodes[episode_title]
+            mp3_url = episodes[episode_title]
+            validate_public_url(mp3_url)
+            return episode_title, mp3_url
 
         close = get_close_matches(episode_title, episodes.keys(), n=1, cutoff=0.8)
         if close:
-            return episode_title, episodes[close[0]]
+            mp3_url = episodes[close[0]]
+            validate_public_url(mp3_url)
+            return episode_title, mp3_url
 
         log.warning("Overcast: no matching feed item for %r in %s.", episode_title, feed_url)
         return None

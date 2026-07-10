@@ -68,6 +68,7 @@ services:
       - ../config.yaml:/app/config.yaml:ro
       - ../state.json:/app/state.json
       - ../token.json:/app/token.json
+      - ../pipeline.lock:/app/pipeline.lock
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:
@@ -87,6 +88,7 @@ services:
       - ../config.yaml:/app/config.yaml:ro
       - ../state.json:/app/state.json
       - ../token.json:/app/token.json
+      - ../pipeline.lock:/app/pipeline.lock
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:

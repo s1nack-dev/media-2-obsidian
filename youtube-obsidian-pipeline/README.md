@@ -163,7 +163,7 @@ and I can swap it in.)
 ## 6. Install dependencies and configure
 
 ```bash
-uv sync   # creates .venv and installs yt-dlp, parakeet-mlx, google auth libs, etc. from uv.lock
+uv sync --extra mlx   # creates .venv and installs yt-dlp, parakeet-mlx, google auth libs, etc. from uv.lock
 cp config.example.yaml config.yaml
 ```
 
@@ -175,6 +175,10 @@ Edit `config.yaml`:
 - `github.vault_notes_dir` — subfolder inside the vault where notes land
 - `transcription.model` — the Hugging Face repo id for the Parakeet model;
   the default (`mlx-community/parakeet-tdt-0.6b-v3`) works well out of the box.
+- `bridge.url` — set to `http://127.0.0.1:8081` for native deployment (everything
+  running on the Mac). If you plan to run containerized (step 9 below), use
+  `http://host.docker.internal:8081` instead. The example config defaults to
+  the containerized value.
 - Everything else has sane defaults.
 
 Note: the first time transcription actually runs for a given
@@ -374,9 +378,10 @@ docstring for details.
   for a second layer of auth (e.g. your own email/Google login) — the
   built-in token check is deliberately minimal.
 - `server.py`'s endpoint fetches whatever URL you give it (subject to the
-  same yt-dlp/direct-download/Overcast-RSS logic as the CLI). Only send
-  it links you trust; there's no allowlist of sites, and URL fetches
-  aren't restricted to public hosts (no SSRF protection).
+  same yt-dlp/direct-download/Overcast-RSS logic as the CLI). SSRF
+  protection is enforced: URLs resolving to loopback, private, link-local,
+  multicast, reserved, or cloud metadata addresses are rejected. However,
+  there's no allowlist of sites, so only send it links you trust.
 - `.env` holds `op://` references, not raw secret values, but it's still
   worth keeping out of anywhere those references could be resolved by
   someone else — it's git-ignored for that reason, same as `config.yaml`.

@@ -36,7 +36,7 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from core import load_config, notify, resolve_secret
+from core import load_config, notify, pipeline_lock, resolve_secret, validate_public_url
 from pipeline import NoTranscriptAvailableError, detect_input_type, process_input
 
 logging.basicConfig(
@@ -45,17 +45,20 @@ logging.basicConfig(
 )
 log = logging.getLogger("server")
 
-_job_queue: "queue.Queue[str]" = queue.Queue()
+MAX_QUEUE_SIZE = 50
+_job_queue: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 
 MAX_BODY_BYTES = 10_000
 
 
 def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
+    lock_path = cfg.get("lock_file", "pipeline.lock")
     while True:
         raw_input = _job_queue.get()
         try:
             log.info("Processing queued job: %s", raw_input)
-            result = process_input(raw_input, cfg, github_token=github_token, bridge_token=bridge_token)
+            with pipeline_lock(lock_path):
+                result = process_input(raw_input, cfg, github_token=github_token, bridge_token=bridge_token)
             log.info("Done: %s -> %s", result["title"], result["note_path"])
             notify(
                 cfg, "Pipeline: processed via webhook",
@@ -128,7 +131,20 @@ def make_handler(auth_token: str):
                 self._send_json(400, {"error": "local file paths are not accepted over the network"})
                 return
 
-            _job_queue.put(raw_input)
+            # SSRF protection: validate URL before enqueueing
+            if input_type in ("youtube", "generic_link"):
+                try:
+                    validate_public_url(raw_input)
+                except ValueError as e:
+                    self._send_json(400, {"error": f"URL validation failed: {e}"})
+                    return
+
+            try:
+                _job_queue.put_nowait(raw_input)
+            except queue.Full:
+                self._send_json(429, {"error": "job queue is full, try again later"})
+                return
+
             depth = _job_queue.qsize()
             log.info("Queued %s (%s), queue depth now %d", raw_input, input_type, depth)
             self._send_json(202, {"status": "queued", "input": raw_input, "queue_depth": depth})

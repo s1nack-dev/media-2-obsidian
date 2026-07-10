@@ -25,8 +25,9 @@ WorkingDirectory=/opt/youtube-obsidian-pipeline
 # Holds GITHUB_TOKEN=... and (if using email alerts) SMTP_PASSWORD=...
 EnvironmentFile=/opt/youtube-obsidian-pipeline/.env
 # Use the full path to uv (find it with `which uv`) - systemd services get a
-# minimal PATH that usually doesn't include ~/.local/bin.
-ExecStart=/root/.local/bin/uv run python fetch_playlist.py --config config.yaml
+# minimal PATH that usually doesn't include ~/.local/bin. Wrap with `op run --`
+# to resolve op:// secret references from the EnvironmentFile at runtime.
+ExecStart=/usr/bin/op run -- /root/.local/bin/uv run python fetch_playlist.py --config config.yaml
 # Run as a dedicated non-root user if you have one set up (and adjust the
 # uv path above to that user's install location):
 # User=youtube-pipeline

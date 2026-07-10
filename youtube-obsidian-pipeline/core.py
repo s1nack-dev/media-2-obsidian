@@ -3,20 +3,28 @@ Shared helpers used by both pipeline.py (single-input processor) and
 fetch_playlist.py (YouTube playlist polling + retry loop): config/state
 I/O, notifications, git helpers, summarization, and Obsidian note building.
 """
+import contextlib
+import fcntl
+import ipaddress
 import json
 import logging
 import os
 import re
 import smtplib
+import socket
 import subprocess
 import urllib.request
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 
 log = logging.getLogger("pipeline")
+
+# Shared timeout for yt-dlp operations (subtitle download, audio download, etc.)
+YTDLP_TIMEOUT_SECONDS = 1800
 
 
 def op_read(ref: str) -> str:
@@ -96,6 +104,75 @@ def load_state(path: str) -> dict:
 
 def save_state(path: str, state: dict) -> None:
     Path(path).write_text(json.dumps(state, indent=2))
+
+
+@contextlib.contextmanager
+def pipeline_lock(lock_path: str):
+    """File-based inter-process lock for serializing process_input() calls
+    across containers. Use around any code that modifies state.json or the
+    git repos to prevent races between pipeline-server and pipeline-fetch."""
+    lock_file = Path(lock_path)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_file, "a") as f:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+# --------------------------------------------------------------------------
+# SSRF protection
+# --------------------------------------------------------------------------
+
+def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Returns True if the IP is private, loopback, link-local, multicast,
+    reserved, or a cloud metadata address."""
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+        return True
+    # Cloud metadata endpoints
+    if isinstance(ip, ipaddress.IPv4Address):
+        # AWS, Azure, Google Cloud metadata
+        if ip in ipaddress.IPv4Network("169.254.169.254/32"):
+            return True
+    elif isinstance(ip, ipaddress.IPv6Address):
+        # IPv6 metadata (fd00:ec2::254 for AWS)
+        if ip in ipaddress.IPv6Network("fd00:ec2::/32"):
+            return True
+    return False
+
+
+def validate_public_url(url: str) -> None:
+    """Validates that a URL is safe to fetch: http(s) only, hostname resolves
+    to public IPs only (not loopback, private, link-local, multicast,
+    reserved, or cloud metadata addresses). Raises ValueError if invalid.
+    Call this before fetching any webhook-provided or user-supplied URL."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"URL scheme must be http or https, got {parsed.scheme!r}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL has no hostname")
+
+    # Resolve hostname to IPs and check each one
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise ValueError(f"Could not resolve hostname {hostname!r}: {e}")
+
+    resolved_ips = {info[4][0] for info in addr_info}
+    for ip_str in resolved_ips:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            # Skip if not a valid IP (shouldn't happen, but be defensive)
+            continue
+        if _is_private_ip(ip):
+            raise ValueError(
+                f"URL {url!r} resolves to private/reserved IP {ip_str} "
+                "(loopback, private, link-local, multicast, cloud metadata, etc.) - rejected for SSRF protection"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -194,10 +271,18 @@ _SUMMARIZE_ATTEMPTS = 2
 def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
     prompt = SUMMARY_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
 
+    # Harden the environment: clear inherited env vars to prevent leaking
+    # sensitive data via tools/MCP/plugins, and minimize filesystem access.
+    clean_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "USER": os.environ.get("USER", ""),
+    }
+
     for attempt in range(1, _SUMMARIZE_ATTEMPTS + 1):
         result = subprocess.run(
             [claude_cmd, "-p", prompt],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=600, env=clean_env,
         )
         if result.returncode != 0:
             log.error("Claude CLI failed (attempt %d/%d): %s", attempt, _SUMMARIZE_ATTEMPTS, result.stderr[-1000:])
@@ -246,9 +331,17 @@ def _sanitize_tag(raw: str) -> str:
 
 def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str]:
     prompt = TAGS_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
+
+    # Harden the environment: same pattern as summarize_with_claude.
+    clean_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "USER": os.environ.get("USER", ""),
+    }
+
     result = subprocess.run(
         [claude_cmd, "-p", prompt],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True, text=True, timeout=600, env=clean_env,
     )
     if result.returncode != 0:
         log.error("Claude CLI failed to generate tags: %s", result.stderr[-1000:])
@@ -273,11 +366,18 @@ def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str
 # Git helpers
 # --------------------------------------------------------------------------
 
+def _sanitize_git_output(text: str) -> str:
+    """Redacts x-access-token:<token>@ patterns from git command output."""
+    return re.sub(r"x-access-token:[^@]+@", "x-access-token:REDACTED@", text)
+
+
 def run_git(args: list[str], cwd: Path) -> None:
     result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "(no output)").strip()
-        raise RuntimeError(f"git {' '.join(args)} failed: {detail}")
+        sanitized_detail = _sanitize_git_output(detail)
+        sanitized_args = [_sanitize_git_output(arg) for arg in args]
+        raise RuntimeError(f"git {' '.join(sanitized_args)} failed: {sanitized_detail}")
 
 
 def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path:

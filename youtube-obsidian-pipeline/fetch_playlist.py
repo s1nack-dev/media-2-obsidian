@@ -26,7 +26,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from core import load_config, load_state, notify, resolve_secret, save_state
+from core import load_config, load_state, notify, pipeline_lock, resolve_secret, save_state
 from pipeline import NoTranscriptAvailableError, process_input
 
 logging.basicConfig(
@@ -109,56 +109,61 @@ def run_once(cfg: dict) -> None:
     log.info("Found %d new video(s).", len(new_items))
     max_retries = cfg.get("max_retries", DEFAULT_MAX_RETRIES)
 
+    lock_path = cfg.get("lock_file", "pipeline.lock")
+
     for item in new_items:
         video_id, title = item["video_id"], item["title"]
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         log.info("Processing %s (%s)", video_id, title)
 
         try:
-            process_input(
-                video_url, cfg,
-                item_hint={"video_id": video_id, "title": title, "published_at": item["published_at"]},
-                github_token=github_token, bridge_token=bridge_token,
-            )
-            processed.add(video_id)
-            state["failed_attempts"].pop(video_id, None)
-            state["processed_video_ids"] = sorted(processed)
-            save_state(cfg["state_file"], state)
+            with pipeline_lock(lock_path):
+                process_input(
+                    video_url, cfg,
+                    item_hint={"video_id": video_id, "title": title, "published_at": item["published_at"]},
+                    github_token=github_token, bridge_token=bridge_token,
+                )
+                processed.add(video_id)
+                state["failed_attempts"].pop(video_id, None)
+                state["processed_video_ids"] = sorted(processed)
+                save_state(cfg["state_file"], state)
             log.info("Done with %s.", video_id)
 
         except NoTranscriptAvailableError:
-            log.warning("No subtitles/transcript available for %s, skipping permanently.", video_id)
-            notify(
-                cfg, "Pipeline: no subtitles available",
-                f'"{title}" ({video_url}) has no captions and could not be transcribed. '
-                "Skipped, will not be retried.",
-            )
-            processed.add(video_id)
-            state["processed_video_ids"] = sorted(processed)
-            save_state(cfg["state_file"], state)
+            with pipeline_lock(lock_path):
+                log.warning("No subtitles/transcript available for %s, skipping permanently.", video_id)
+                notify(
+                    cfg, "Pipeline: no subtitles available",
+                    f'"{title}" ({video_url}) has no captions and could not be transcribed. '
+                    "Skipped, will not be retried.",
+                )
+                processed.add(video_id)
+                state["processed_video_ids"] = sorted(processed)
+                save_state(cfg["state_file"], state)
 
         except Exception:
             err = traceback.format_exc()
             log.error("Failed processing %s (%s):\n%s", video_id, title, err)
 
-            attempts = state["failed_attempts"].get(video_id, 0) + 1
-            state["failed_attempts"][video_id] = attempts
-            save_state(cfg["state_file"], state)
-
-            if attempts >= max_retries:
-                notify(
-                    cfg, f"Pipeline: giving up on a video after {attempts} failures",
-                    f'"{title}" ({video_url}) failed {attempts} times and will not be retried again.'
-                    f"\n\nLast error:\n{err[-2000:]}",
-                )
-                processed.add(video_id)
-                state["processed_video_ids"] = sorted(processed)
+            with pipeline_lock(lock_path):
+                attempts = state["failed_attempts"].get(video_id, 0) + 1
+                state["failed_attempts"][video_id] = attempts
                 save_state(cfg["state_file"], state)
-            else:
-                notify(
-                    cfg, f"Pipeline: run failed (attempt {attempts}/{max_retries})",
-                    f'"{title}" ({video_url}) failed, will retry on the next run.\n\nError:\n{err[-2000:]}',
-                )
+
+                if attempts >= max_retries:
+                    notify(
+                        cfg, f"Pipeline: giving up on a video after {attempts} failures",
+                        f'"{title}" ({video_url}) failed {attempts} times and will not be retried again.'
+                        f"\n\nLast error:\n{err[-2000:]}",
+                    )
+                    processed.add(video_id)
+                    state["processed_video_ids"] = sorted(processed)
+                    save_state(cfg["state_file"], state)
+                else:
+                    notify(
+                        cfg, f"Pipeline: run failed (attempt {attempts}/{max_retries})",
+                        f'"{title}" ({video_url}) failed, will retry on the next run.\n\nError:\n{err[-2000:]}',
+                    )
             # continue on to the next video rather than aborting the whole run
             continue
 
@@ -173,6 +178,9 @@ def main():
     parser.add_argument("--interval", type=int, default=1800,
                          help="Seconds between polls in --loop mode. Default 1800 (30 min).")
     args = parser.parse_args()
+
+    if args.loop and args.interval <= 0:
+        parser.error("--interval must be a positive integer when using --loop")
 
     cfg = load_config(args.config)
 
