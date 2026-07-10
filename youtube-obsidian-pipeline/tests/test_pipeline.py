@@ -109,7 +109,8 @@ def test_resolve_overcast_episode(monkeypatch):
     rss = b'<rss><channel><item><title>Episode One</title><enclosure url="https://cdn.example/e.mp3" /></item></channel></rss>'
     class R:
         def __init__(self, data): self.data = data
-        def read(self): return self.data
+        def read(self): """Return the stored response data."""
+return self.data
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
     monkeypatch.setattr(pipeline, "urlopen", lambda req, timeout: R(page if "overcast" in req.full_url else rss))
     assert pipeline.resolve_overcast_episode("https://overcast.fm/+abc") == ("Episode One", "https://cdn.example/e.mp3")

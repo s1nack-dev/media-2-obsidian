@@ -44,6 +44,18 @@ DEFAULT_MAX_RETRIES = 3
 # --------------------------------------------------------------------------
 
 def get_youtube_service(cfg: dict):
+    """
+    Create an authenticated YouTube Data API service from the configured OAuth token.
+    
+    Parameters:
+        cfg (dict): Configuration containing the YouTube OAuth token file path.
+    
+    Returns:
+        Resource: An authenticated YouTube Data API service.
+    
+    Raises:
+        SystemExit: If the configured OAuth token file does not exist.
+    """
     token_file = cfg["youtube"]["token_file"]
     if not Path(token_file).exists():
         log.error(
@@ -61,7 +73,15 @@ def get_youtube_service(cfg: dict):
 
 
 def get_playlist_items(service, playlist_id: str) -> list[dict]:
-    """Returns items oldest-first: [{video_id, title, published_at}, ...]"""
+    """
+    Retrieve all videos in a YouTube playlist in oldest-first order.
+    
+    Parameters:
+    	playlist_id (str): The ID of the playlist to retrieve.
+    
+    Returns:
+    	list[dict]: Playlist items containing `video_id`, `title`, and `published_at`.
+    """
     items = []
     page_token = None
     while True:
@@ -88,6 +108,13 @@ def get_playlist_items(service, playlist_id: str) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def run_once(cfg: dict) -> None:
+    """
+    Process each unprocessed playlist video and persist its outcome.
+    
+    Parameters:
+        cfg (dict): Application configuration, including playlist, state, secret,
+            locking, and retry settings.
+    """
     state = load_state(cfg["state_file"])
     processed = set(state["processed_video_ids"])
 
@@ -169,6 +196,13 @@ def run_once(cfg: dict) -> None:
 
 
 def main():
+    """
+    Run one playlist-processing pass or continuously poll at a configured interval.
+    
+    Command-line options select the configuration file, loop mode, and delay between
+    polling passes. In loop mode, errors from an individual pass are logged and
+    reported before processing resumes after the configured interval.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--loop", action="store_true", help="Run forever, polling every --interval "

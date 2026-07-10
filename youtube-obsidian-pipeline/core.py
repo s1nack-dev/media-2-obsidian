@@ -28,6 +28,14 @@ YTDLP_TIMEOUT_SECONDS = 1800
 
 
 def op_read(ref: str) -> str:
+    """Read a secret from 1Password using its reference.
+    
+    Parameters:
+        ref (str): The 1Password secret reference.
+    
+    Returns:
+        str: The secret value without surrounding whitespace.
+    """
     result = subprocess.run(["op", "read", ref], capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
@@ -52,7 +60,14 @@ def resolve_secret(env_var: str, op_ref: str) -> str:
 # --------------------------------------------------------------------------
 
 def notify(cfg: dict, subject: str, message: str) -> None:
-    """Best-effort alert via webhook and/or email. Never raises."""
+    """
+    Send an alert through the configured webhook and/or email notification channels.
+    
+    Parameters:
+        cfg (dict): Configuration containing notification settings.
+        subject (str): Notification subject.
+        message (str): Notification body.
+    """
     notif_cfg = cfg.get("notifications", {}) or {}
 
     webhook_url = notif_cfg.get("webhook_url")
@@ -89,11 +104,28 @@ def notify(cfg: dict, subject: str, message: str) -> None:
 # --------------------------------------------------------------------------
 
 def load_config(path: str) -> dict:
+    """Load configuration data from a YAML file.
+    
+    Parameters:
+    	path (str): Path to the YAML configuration file.
+    
+    Returns:
+    	dict: Parsed configuration data.
+    """
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 def load_state(path: str) -> dict:
+    """
+    Load persisted pipeline state from a JSON file.
+    
+    Parameters:
+    	path (str): Path to the state file.
+    
+    Returns:
+    	dict: The loaded state, including an empty `failed_attempts` mapping when absent, or default initial state when the file does not exist.
+    """
     p = Path(path)
     if p.exists():
         state = json.loads(p.read_text())
@@ -103,14 +135,24 @@ def load_state(path: str) -> dict:
 
 
 def save_state(path: str, state: dict) -> None:
+    """
+    Save pipeline state as indented JSON at the specified path.
+    
+    Parameters:
+        path (str): Destination file path.
+        state (dict): State data to serialize.
+    """
     Path(path).write_text(json.dumps(state, indent=2))
 
 
 @contextlib.contextmanager
 def pipeline_lock(lock_path: str):
-    """File-based inter-process lock for serializing process_input() calls
-    across containers. Use around any code that modifies state.json or the
-    git repos to prevent races between pipeline-server and pipeline-fetch."""
+    """
+    Serialize access to shared state and repositories using a file-based inter-process lock.
+    
+    Parameters:
+        lock_path (str): Path to the lock file.
+    """
     lock_file = Path(lock_path)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_file, "a") as f:
@@ -126,8 +168,14 @@ def pipeline_lock(lock_path: str):
 # --------------------------------------------------------------------------
 
 def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """Returns True if the IP is private, loopback, link-local, multicast,
-    reserved, or a cloud metadata address."""
+    """Determine whether an IP address belongs to a private or reserved address range.
+    
+    Parameters:
+    	ip (IPv4Address | IPv6Address): The IP address to classify.
+    
+    Returns:
+    	bool: `true` if the address is private, loopback, link-local, multicast, reserved, or a recognized cloud metadata address, `false` otherwise.
+    """
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
         return True
     # Cloud metadata endpoints
@@ -143,10 +191,13 @@ def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
 
 
 def validate_public_url(url: str) -> None:
-    """Validates that a URL is safe to fetch: http(s) only, hostname resolves
-    to public IPs only (not loopback, private, link-local, multicast,
-    reserved, or cloud metadata addresses). Raises ValueError if invalid.
-    Call this before fetching any webhook-provided or user-supplied URL."""
+    """
+    Validate that a URL uses HTTP or HTTPS and resolves exclusively to public IP addresses.
+    
+    Raises:
+        ValueError: If the URL has an unsupported scheme, lacks a hostname, cannot
+            be resolved, or resolves to a private, reserved, or metadata IP address.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"URL scheme must be http or https, got {parsed.scheme!r}")
@@ -180,7 +231,14 @@ def validate_public_url(url: str) -> None:
 # --------------------------------------------------------------------------
 
 def srt_to_plain_text(srt_path: Path) -> str:
-    """Strips index numbers/timestamps, collapses to plain paragraph text."""
+    """Convert an SRT subtitle file into deduplicated plain text.
+    
+    Parameters:
+    	srt_path (Path): Path to the SRT subtitle file.
+    
+    Returns:
+    	str: Subtitle text with indices, timestamps, blank lines, and consecutive duplicate lines removed.
+    """
     lines = srt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     text_lines = []
     for line in lines:
@@ -269,6 +327,16 @@ _SUMMARIZE_ATTEMPTS = 2
 
 
 def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
+    """
+    Generate a transcript summary using the Claude CLI.
+    
+    Parameters:
+        claude_cmd (str): Command used to invoke the Claude CLI.
+        transcript_text (str): Transcript text to summarize.
+    
+    Returns:
+        str: The generated summary beginning with the expected summary heading, or a failure message if generation fails.
+    """
     prompt = SUMMARY_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
 
     # Harden the environment: clear inherited env vars to prevent leaking
@@ -324,12 +392,31 @@ _MAX_TAG_LENGTH = 40
 
 
 def _sanitize_tag(raw: str) -> str:
+    """
+    Convert raw text into a normalized tag.
+        
+    Parameters:
+        raw (str): The text to normalize.
+    
+    Returns:
+        str: A lowercase tag with whitespace replaced by hyphens and unsupported characters removed.
+    """
     tag = re.sub(r"\s+", "-", raw.strip().lower())
     tag = re.sub(r"[^a-z0-9\-_/]", "", tag)
     return tag.strip("-")
 
 
 def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str]:
+    """
+    Generate content tags from a transcript using Claude.
+    
+    Parameters:
+        claude_cmd (str): Command used to invoke the Claude CLI.
+        transcript_text (str): Transcript from which to extract tags.
+    
+    Returns:
+        list[str]: Ordered, unique, sanitized tags generated from the transcript, or an empty list if generation fails.
+    """
     prompt = TAGS_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
 
     # Harden the environment: same pattern as summarize_with_claude.
@@ -372,6 +459,16 @@ def _sanitize_git_output(text: str) -> str:
 
 
 def run_git(args: list[str], cwd: Path) -> None:
+    """
+    Run a Git command in the specified directory.
+    
+    Parameters:
+    	args (list[str]): Arguments to pass to Git.
+    	cwd (Path): Directory in which to run the command.
+    
+    Raises:
+    	RuntimeError: If Git exits with a nonzero status.
+    """
     result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "(no output)").strip()
@@ -381,6 +478,18 @@ def run_git(args: list[str], cwd: Path) -> None:
 
 
 def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path:
+    """
+    Ensure that a local repository is cloned or synchronized with the specified branch.
+    
+    Parameters:
+    	repo_url (str): Repository URL.
+    	local_path (str): Local directory for the repository.
+    	branch (str): Branch to clone or synchronize.
+    	token (str): Authentication token for the repository URL.
+    
+    Returns:
+    	Path: Path to the local repository.
+    """
     path = Path(local_path)
     authed_url = repo_url.replace("https://", f"https://x-access-token:{token}@")
     if not (path / ".git").exists():
@@ -405,6 +514,16 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
 
 
 def commit_and_push(repo_path: Path, files: list[Path], message: str, name: str, email: str) -> None:
+    """
+    Commit staged changes in a repository and push them to its origin.
+    
+    Parameters:
+    	repo_path (Path): Local Git repository path.
+    	files (list[Path]): Files to stage for the commit.
+    	message (str): Commit message.
+    	name (str): Git author name.
+    	email (str): Git author email.
+    """
     run_git(["config", "user.name", name], cwd=repo_path)
     run_git(["config", "user.email", email], cwd=repo_path)
     rel_files = [str(f.relative_to(repo_path)) for f in files]
@@ -423,6 +542,15 @@ def commit_and_push(repo_path: Path, files: list[Path], message: str, name: str,
 # --------------------------------------------------------------------------
 
 def slugify(title: str) -> str:
+    """
+    Create a lowercase URL-friendly slug from a title.
+    
+    Parameters:
+        title (str): Title to normalize.
+    
+    Returns:
+        str: A slug limited to 80 characters, or "untitled" when the title contains no usable characters.
+    """
     slug = re.sub(r"[^a-zA-Z0-9\- ]", "", title).strip().lower()
     slug = re.sub(r"\s+", " ", slug).replace(" ", "-")
     return slug[:80] or "untitled"
@@ -431,7 +559,23 @@ def slugify(title: str) -> str:
 def build_note(title: str, source_type: str, source_url: str | None, video_id: str | None,
                 published_at: str | None, subtitle_github_url: str, summary: str,
                 content_tags: list[str] | None = None) -> str:
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """
+                Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
+                
+                Parameters:
+                	title (str): Note title.
+                	source_type (str): Type of the source.
+                	source_url (str | None): Optional source URL.
+                	video_id (str | None): Optional video identifier.
+                	published_at (str | None): Optional publication timestamp.
+                	subtitle_github_url (str): URL to the subtitles on GitHub.
+                	summary (str): Summary content for the note.
+                	content_tags (list[str] | None): Optional additional tags.
+                
+                Returns:
+                	str: Complete Obsidian note in Markdown format.
+                """
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     tags = ["video-summary", source_type]
     for tag in content_tags or []:

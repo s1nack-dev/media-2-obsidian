@@ -77,7 +77,18 @@ class NoTranscriptAvailableError(PipelineError):
 # --------------------------------------------------------------------------
 
 def detect_input_type(raw_input: str) -> str:
-    """Returns 'local_file' | 'youtube' | 'generic_link'."""
+    """
+    Classifies an input as a local file, YouTube URL, or generic HTTP(S) link.
+    
+    Parameters:
+    	raw_input (str): Local path or HTTP(S) URL to classify.
+    
+    Returns:
+    	str: One of `"local_file"`, `"youtube"`, or `"generic_link"`.
+    
+    Raises:
+    	ValueError: If the input is neither an existing local path nor an HTTP(S) URL.
+    """
     if Path(raw_input).exists():
         return "local_file"
     parsed = urlparse(raw_input)
@@ -92,6 +103,18 @@ def detect_input_type(raw_input: str) -> str:
 
 
 def extract_youtube_video_id(url: str) -> str:
+    """
+    Extract the video identifier from a YouTube URL.
+    
+    Parameters:
+    	url (str): YouTube URL containing a video identifier.
+    
+    Returns:
+    	str: The extracted video identifier.
+    
+    Raises:
+    	ValueError: If the URL does not contain a video identifier.
+    """
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     if host.endswith("youtu.be"):
@@ -109,9 +132,18 @@ def extract_youtube_video_id(url: str) -> str:
 # --------------------------------------------------------------------------
 
 def _ytdlp_download_subs(url: str, out_basename: str, languages: list[str], workdir: Path) -> tuple[Path, str] | None:
-    """Downloads subtitles (manual captions preferred, falls back to
-    auto-generated) as .srt for any URL yt-dlp can extract from. Returns
-    (path_to_srt, language_code), or None if no subtitles were found."""
+    """
+    Download available subtitles for a URL as an SRT file.
+    
+    Parameters:
+        url (str): URL to process with yt-dlp.
+        out_basename (str): Base name for the generated subtitle file.
+        languages (list[str]): Preferred subtitle language codes.
+        workdir (Path): Directory for downloaded subtitle files.
+    
+    Returns:
+        tuple[Path, str] | None: The selected SRT path and its language code, or None if no subtitles are available.
+    """
     workdir.mkdir(parents=True, exist_ok=True)
     out_tmpl = str(workdir / f"{out_basename}.%(ext)s")
     lang_arg = ",".join(languages)
@@ -142,11 +174,29 @@ def _ytdlp_download_subs(url: str, out_basename: str, languages: list[str], work
 
 
 def download_subtitles(video_id: str, languages: list[str], workdir: Path) -> tuple[Path, str] | None:
+    """Download a YouTube video's subtitles in the preferred languages.
+    
+    Parameters:
+    	video_id (str): YouTube video identifier.
+    	languages (list[str]): Subtitle language codes to prioritize.
+    	workdir (Path): Directory for downloaded subtitle files.
+    
+    Returns:
+    	tuple[Path, str] | None: The selected subtitle file and its language code, or `None` if no subtitles are available.
+    """
     url = f"https://www.youtube.com/watch?v={video_id}"
     return _ytdlp_download_subs(url, video_id, languages, workdir)
 
 
 def fetch_title_via_ytdlp(url: str) -> str | None:
+    """Fetch the media title reported by yt-dlp.
+    
+    Parameters:
+    	url (str): The media URL to inspect.
+    
+    Returns:
+    	str | None: The first non-empty title line, or `None` if yt-dlp cannot provide a title.
+    """
     result = subprocess.run(
         ["yt-dlp", "--skip-download", "--print", "title", url],
         capture_output=True, text=True, timeout=60,
@@ -157,6 +207,16 @@ def fetch_title_via_ytdlp(url: str) -> str | None:
 
 
 def download_audio_via_ytdlp(url: str, workdir: Path) -> Path | None:
+    """
+    Download the best available audio for a URL and return the resulting local file.
+    
+    Parameters:
+    	url (str): Media URL to download.
+    	workdir (Path): Directory where the downloaded audio file is saved.
+    
+    Returns:
+    	Path | None: The downloaded audio file, or `None` if the download fails or produces no file.
+    """
     workdir.mkdir(parents=True, exist_ok=True)
     out_tmpl = str(workdir / "audio.%(ext)s")
     cmd = [
@@ -172,14 +232,29 @@ def download_audio_via_ytdlp(url: str, workdir: Path) -> Path | None:
 
 
 def is_direct_media_url(url: str) -> bool:
+    """Determine whether a URL points to a directly downloadable media file.
+    
+    Parameters:
+    	url (str): URL to inspect.
+    
+    Returns:
+    	bool: `true` if the URL path ends with a recognized media extension, `false` otherwise.
+    """
     path = urlparse(url).path.lower()
     return any(path.endswith(ext) for ext in DIRECT_MEDIA_EXTENSIONS)
 
 
 def download_direct_file(url: str, workdir: Path) -> Path:
-    """Downloads a URL known to be a direct media file. Sends a normal
-    browser-ish User-Agent since some CDNs (e.g. podcast hosts) reject
-    Python's default urllib UA. Validates URL for SSRF protection first."""
+    """
+    Download a direct media resource to the working directory.
+    
+    Parameters:
+    	url (str): URL of the media resource.
+    	workdir (Path): Directory where the downloaded file is saved.
+    
+    Returns:
+    	Path: Path to the downloaded media file.
+    """
     validate_public_url(url)
     workdir.mkdir(parents=True, exist_ok=True)
     filename = Path(urlparse(url).path).name or "download"
@@ -205,15 +280,15 @@ _OVERCAST_EPISODE_TITLE_RE = re.compile(r'<h2[^>]*class="title"[^>]*>([^<]+)</h2
 
 
 def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
-    """Resolves an overcast.fm episode page to (episode_title, mp3_url) by
-    finding the podcast's RSS feed link on the page, then matching this
-    episode's title against the feed's <item> titles to get the real
-    <enclosure> (mp3) URL - always audio, never video. Validates all URLs
-    for SSRF protection.
-
-    Returns None if any step fails (no RSS link found, feed unreachable,
-    no matching item, SSRF check fails), so the caller can fall back to
-    generic link handling instead of failing outright.
+    """
+    Resolve an Overcast episode page to its title and audio enclosure URL.
+    
+    Parameters:
+        url (str): Overcast episode page URL.
+    
+    Returns:
+        tuple[str, str] | None: Episode title and validated enclosure URL, or None
+        if the page, feed, or matching episode cannot be resolved.
     """
     try:
         validate_public_url(url)
@@ -262,9 +337,14 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
 
 
 def find_sidecar_subtitle(local_path: Path) -> Path | None:
-    """Only .srt sidecars are recognized (same basename, .srt extension) -
-    a .vtt sidecar falls through to transcription instead, to avoid a
-    timestamp-format conversion for a rare case."""
+    """Find an SRT subtitle file beside a local media file.
+    
+    Parameters:
+    	local_path (Path): Path to the local media file.
+    
+    Returns:
+    	Path | None: The matching SRT sidecar path, or `None` if it does not exist.
+    """
     candidate = local_path.with_suffix(".srt")
     return candidate if candidate.exists() else None
 
@@ -276,26 +356,23 @@ def find_sidecar_subtitle(local_path: Path) -> Path | None:
 def process_input(raw_input: str, cfg: dict, item_hint: dict | None = None,
                    github_token: str | None = None, bridge_token: str | None = None) -> dict:
     """
-    Processes one media input end-to-end: resolve -> transcript -> summarize
-    -> commit transcript -> commit note.
-
-    item_hint: optional {"title": ..., "published_at": ..., "video_id": ...}
-    with metadata the caller already knows (e.g. fetch_playlist.py, which
-    already has this from the YouTube API and shouldn't need to re-derive
-    it). Any key not supplied is derived internally.
-
-    bridge_token: pre-resolved auth token for host_bridge.py. If not
-    supplied, resolved once here via resolve_secret() (BRIDGE_AUTH_TOKEN
-    env var if set, e.g. injected by docker-compose, else op_read()) -
-    callers processing many items in a loop should resolve it once
-    themselves and pass it in (same pattern as github_token) to avoid a
-    1Password CLI call per item.
-
-    Returns {"title", "source_type", "note_path", "subtitle_path"} on
-    success. Raises NoTranscriptAvailableError if no transcript could be
-    obtained by any means (maps to "skip permanently, don't retry" for
-    callers). Raises any other Exception for transient/retryable failures.
-    """
+                   Process a media input through transcription, summarization, and GitHub publication.
+                   
+                   Parameters:
+                       raw_input (str): Local media path or media URL.
+                       cfg (dict): Pipeline, transcription, and GitHub configuration.
+                       item_hint (dict | None): Optional known metadata such as ``title``,
+                           ``published_at``, or ``video_id``.
+                       github_token (str | None): Optional pre-resolved GitHub authentication token.
+                       bridge_token (str | None): Optional pre-resolved bridge service authentication token.
+                   
+                   Returns:
+                       dict: Metadata containing ``title``, ``source_type``, ``note_path``, and
+                       ``subtitle_path``.
+                   
+                   Raises:
+                       NoTranscriptAvailableError: If no subtitles or transcribable audio is available.
+                   """
     item_hint = item_hint or {}
     source_type = detect_input_type(raw_input)
 

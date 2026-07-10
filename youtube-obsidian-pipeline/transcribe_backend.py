@@ -25,22 +25,14 @@ _MODEL_CACHE: dict[str, BaseParakeet] = {}
 
 
 def get_model(model_id: str) -> BaseParakeet:
-    """Cached per model_id so a single process handling multiple items
-    doesn't reload the model from disk for every video.
-
-    parakeet-mlx loads weights via huggingface_hub, which by default
-    checks Hugging Face Hub for a newer revision on every load, even when
-    already cached locally. Since model_id is a fixed config value, that
-    check is pure overhead (and an unwanted network call) for anything
-    past the first run - so we force offline mode for the load attempt
-    and only fall back to an actual download the first time a given
-    model_id hasn't been cached yet.
-
-    Note: huggingface_hub reads the HF_HUB_OFFLINE env var into a
-    module-level constant once, at import time - setting os.environ at
-    runtime has no effect on an already-imported huggingface_hub. We have
-    to flip the huggingface_hub.constants.HF_HUB_OFFLINE attribute
-    directly, since that's what is_offline_mode() actually reads.
+    """
+    Load and cache a Parakeet model for reuse within the process.
+    
+    Parameters:
+        model_id (str): Identifier of the Parakeet model to load.
+    
+    Returns:
+        BaseParakeet: The cached or newly loaded model.
     """
     if model_id not in _MODEL_CACHE:
         hf_constants.HF_HUB_OFFLINE = True
@@ -56,6 +48,15 @@ def get_model(model_id: str) -> BaseParakeet:
 
 
 def _format_timestamp(seconds: float) -> str:
+    """
+    Format a duration in seconds as an SRT timestamp.
+    
+    Parameters:
+        seconds (float): Duration in seconds.
+    
+    Returns:
+        str: Timestamp in `HH:MM:SS,mmm` format.
+    """
     total_ms = int(timedelta(seconds=seconds).total_seconds() * 1000)
     h, rem = divmod(total_ms, 3_600_000)
     m, rem = divmod(rem, 60_000)
@@ -64,6 +65,15 @@ def _format_timestamp(seconds: float) -> str:
 
 
 def _sentences_to_srt(sentences: list[AlignedSentence]) -> str:
+    """
+    Convert aligned sentences into an SRT-formatted subtitle document.
+    
+    Parameters:
+    	sentences (list[AlignedSentence]): Sentences with start and end timestamps and subtitle text.
+    
+    Returns:
+    	str: The formatted SRT subtitle document.
+    """
     lines = []
     for i, sentence in enumerate(sentences, start=1):
         lines.append(str(i))
@@ -74,15 +84,15 @@ def _sentences_to_srt(sentences: list[AlignedSentence]) -> str:
 
 
 def transcribe_audio(audio_path: Path, model_id: str) -> tuple[str, str]:
-    """Transcribes an audio/video file with Parakeet.
-
-    Chunked in 120s windows (15s overlap, matching parakeet-mlx's own CLI
-    defaults) - without this, transcribe() tries to run the whole file
-    through in one pass, which is fine for short clips but blows up MLX's
-    Metal buffer limit on anything more than a few minutes long (podcasts,
-    long videos).
-
-    Returns (srt_text, plain_text). Raises on failure (caller catches).
+    """
+    Transcribe an audio or video file and produce subtitle and plain-text output.
+    
+    Parameters:
+        audio_path (Path): Path to the audio or video file.
+        model_id (str): Identifier of the Parakeet model to use.
+    
+    Returns:
+        tuple[str, str]: The SRT-formatted subtitles and plain transcription text.
     """
     model = get_model(model_id)
     result = model.transcribe(str(audio_path), chunk_duration=120.0, overlap_duration=15.0)

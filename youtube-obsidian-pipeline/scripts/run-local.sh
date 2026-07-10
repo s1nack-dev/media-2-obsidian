@@ -17,10 +17,12 @@ cd "$(dirname "$0")/.."
 PID_FILE=".host_bridge.pid"
 LOG_FILE="host_bridge.log"
 
+# require verifies that a command is available on PATH and exits with an error if it is missing.
 require() {
     command -v "$1" >/dev/null 2>&1 || { echo "error: '$1' not found on PATH" >&2; exit 1; }
 }
 
+# bridge_port reads the bridge port from config.yaml and outputs 8081 when no port is configured.
 bridge_port() {
     uv run python -c "
 import yaml
@@ -28,10 +30,12 @@ print((yaml.safe_load(open('config.yaml')).get('bridge') or {}).get('port', 8081
 "
 }
 
+# is_healthy checks whether the bridge health endpoint responds successfully for the specified port.
 is_healthy() {
     curl -sf "http://127.0.0.1:${1}/healthz" >/dev/null 2>&1
 }
 
+# cmd_start starts or reuses a healthy host_bridge.py process and prints the command for connecting client scripts to it.
 cmd_start() {
     require op
     require uv
@@ -69,6 +73,7 @@ cmd_start() {
     echo "  BRIDGE_URL=http://127.0.0.1:${port} op run -- uv run python pipeline.py --config config.yaml --input <path-or-url>"
 }
 
+# cmd_stop stops the host_bridge.py process recorded in the PID file and removes the PID file.
 cmd_stop() {
     if [ ! -f "$PID_FILE" ]; then
         echo "No $PID_FILE found - nothing to stop (was host_bridge.py started by this script?)."

@@ -13,11 +13,28 @@ _JSON_HEADERS = {"Content-Type": "application/json"}
 
 
 def _auth_headers(bridge_token: str) -> dict:
+    """Build authorization headers for requests to the bridge service.
+    
+    Parameters:
+        bridge_token (str): Bearer token used to authorize the request.
+    
+    Returns:
+        dict: Headers containing the bearer authorization value.
+    """
     return {"Authorization": f"Bearer {bridge_token}"}
 
 
 def transcribe_audio(audio_path: Path, model_id: str, bridge_url: str, bridge_token: str) -> tuple[str, str]:
-    """Returns (srt_text, plain_text). Raises on failure (caller catches)."""
+    """
+    Transcribe an audio file through the bridge service.
+    
+    Parameters:
+        audio_path (Path): Path to the audio file to transcribe.
+        model_id (str): Identifier of the transcription model to use.
+    
+    Returns:
+        tuple[str, str]: The SRT-formatted transcription and plain-text transcription.
+    """
     url = f"{bridge_url.rstrip('/')}/transcribe?model_id={model_id}"
     req = Request(url, data=audio_path.read_bytes(), method="POST", headers=_auth_headers(bridge_token))
     with urlopen(req, timeout=1800) as resp:
@@ -26,6 +43,17 @@ def transcribe_audio(audio_path: Path, model_id: str, bridge_url: str, bridge_to
 
 
 def summarize(transcript_text: str, bridge_url: str, bridge_token: str) -> str:
+    """
+    Generate a summary of the transcript using the bridge service.
+    
+    Parameters:
+        transcript_text (str): Transcript text to summarize.
+        bridge_url (str): Base URL of the bridge service.
+        bridge_token (str): Bearer token for authenticating the request.
+    
+    Returns:
+        str: Generated transcript summary.
+    """
     url = f"{bridge_url.rstrip('/')}/summarize"
     body = json.dumps({"transcript": transcript_text}).encode()
     headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}
@@ -36,6 +64,15 @@ def summarize(transcript_text: str, bridge_url: str, bridge_token: str) -> str:
 
 
 def generate_tags(transcript_text: str, bridge_url: str, bridge_token: str) -> list[str]:
+    """
+    Generate tags from transcript text using the bridge service.
+    
+    Parameters:
+        transcript_text (str): Transcript text to analyze.
+    
+    Returns:
+        list[str]: Tags generated from the transcript.
+    """
     url = f"{bridge_url.rstrip('/')}/tags"
     body = json.dumps({"transcript": transcript_text}).encode()
     headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}

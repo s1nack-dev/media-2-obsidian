@@ -12,12 +12,18 @@ class _Request:
 class _Playlist:
     def __init__(self): self.calls = 0
     def list(self, **kwargs):
+        """Return a paginated playlist response containing a video item on the first call.
+        
+        Returns:
+        	_Request: A response with the first playlist item and a continuation token on the first call, or an empty item list on subsequent calls.
+        """
         self.calls += 1
         return _Request({"items": [{"contentDetails": {"videoId": "v1"}, "snippet": {"title": "One", "publishedAt": "2024"}}], "nextPageToken": "next"} if self.calls == 1 else {"items": []})
 
 
 class _Service:
-    def __init__(self): self.p = _Playlist()
+    def __init__(self): """Initialize a service with a playlist client."""
+self.p = _Playlist()
     def playlistItems(self): return self.p
 
 

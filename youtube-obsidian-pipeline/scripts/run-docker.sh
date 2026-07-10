@@ -17,10 +17,12 @@ cd "$(dirname "$0")/.."
 PID_FILE=".host_bridge.pid"
 LOG_FILE="host_bridge.log"
 
+# require verifies that a command is available on `PATH` and exits with an error if it is missing.
 require() {
     command -v "$1" >/dev/null 2>&1 || { echo "error: '$1' not found on PATH" >&2; exit 1; }
 }
 
+# bridge_port determines the configured host bridge port and echoes 8081 when no port is configured.
 bridge_port() {
     uv run python -c "
 import yaml
@@ -28,10 +30,12 @@ print((yaml.safe_load(open('config.yaml')).get('bridge') or {}).get('port', 8081
 "
 }
 
+# is_healthy checks whether the host bridge health endpoint responds successfully.
 is_healthy() {
     curl -sf "http://127.0.0.1:${1}/healthz" >/dev/null 2>&1
 }
 
+# start_host_bridge starts or reuses the native host bridge and waits for its health endpoint to become ready, exiting on startup failure.
 start_host_bridge() {
     local port
     port="$(bridge_port)"
@@ -60,6 +64,7 @@ start_host_bridge() {
     echo "host_bridge.py up (PID $(cat "$PID_FILE")), logging to $LOG_FILE."
 }
 
+# stop_host_bridge stops the host_bridge.py process tracked by the PID file and removes the file.
 stop_host_bridge() {
     if [ ! -f "$PID_FILE" ]; then
         echo "No $PID_FILE found - host_bridge.py wasn't started by this script, leaving it alone."
@@ -76,6 +81,7 @@ stop_host_bridge() {
     rm -f "$PID_FILE"
 }
 
+# cmd_start starts the host bridge and Docker containers after validating required tools, files, and Docker availability.
 cmd_start() {
     require op
     require uv
@@ -97,6 +103,7 @@ cmd_start() {
     echo "Ready. host_bridge.py + all containers are up."
 }
 
+# cmd_stop stops Docker containers when available and stops the native host bridge process.
 cmd_stop() {
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         echo "Stopping containers..."

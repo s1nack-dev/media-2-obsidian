@@ -75,6 +75,14 @@ def test_notify_webhook_failure_is_best_effort(monkeypatch):
 
 
 def urlparse_host(url):
+    """Extract the hostname from a URL.
+    
+    Parameters:
+    	url (str): The URL to parse.
+    
+    Returns:
+    	str or None: The URL's hostname, or `None` when no hostname is present.
+    """
     from urllib.parse import urlparse
     return urlparse(url).hostname
 

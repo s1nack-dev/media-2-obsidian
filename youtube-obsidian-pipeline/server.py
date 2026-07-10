@@ -52,6 +52,14 @@ MAX_BODY_BYTES = 10_000
 
 
 def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
+    """
+    Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
+    
+    Parameters:
+        cfg (dict): Pipeline and notification configuration.
+        github_token (str): Token used for GitHub operations.
+        bridge_token (str): Token used for bridge operations.
+    """
     lock_path = cfg.get("lock_file", "pipeline.lock")
     while True:
         raw_input = _job_queue.get()
@@ -76,6 +84,16 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
 
 
 def make_handler(auth_token: str):
+    """Create an authenticated HTTP request handler for the processing endpoints.
+    
+    Parameters:
+        auth_token (str): Token required in the ``Authorization`` header for
+            processing requests.
+    
+    Returns:
+        type: A ``BaseHTTPRequestHandler`` subclass that serves health checks and
+            validates and queues processing requests.
+    """
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             log.info("%s - %s", self.address_string(), fmt % args)
@@ -153,6 +171,11 @@ def make_handler(auth_token: str):
 
 
 def main():
+    """
+    Start the authenticated webhook server and its background pipeline worker.
+    
+    Command-line options control the configuration file, bind address, and port. The server runs until interrupted.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. 127.0.0.1 is reachable from "

@@ -20,6 +20,14 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
 
 
 def main():
+    """
+    Authorize access to YouTube and save the resulting credentials for reuse.
+    
+    Parameters:
+        --config: Path to the YAML configuration file.
+    
+    The authorization flow opens a browser and requires a local redirect listener. The configuration must provide the token file path and 1Password references for the OAuth client credentials.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()
@@ -30,6 +38,15 @@ def main():
     token_file = cfg["youtube"]["token_file"]
 
     def op_read(ref):
+        """
+        Read a secret value from 1Password using its reference.
+        
+        Parameters:
+            ref (str): The 1Password reference to read.
+        
+        Returns:
+            str: The trimmed secret value.
+        """
         return subprocess.run(["op", "read", ref], capture_output=True, text=True, check=True).stdout.strip()
 
     client_config = {

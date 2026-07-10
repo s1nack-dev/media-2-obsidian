@@ -10,6 +10,15 @@ import server
 
 
 def _serve(handler):
+    """
+    Start a daemon-threaded HTTP server on an ephemeral loopback port.
+    
+    Parameters:
+        handler: The request handler class or factory used by the HTTP server.
+    
+    Returns:
+        HTTPServer: The running HTTP server instance.
+    """
     try:
         httpd = HTTPServer(("127.0.0.1", 0), handler)
     except PermissionError:
@@ -94,6 +103,12 @@ def test_handler_rejects_local_file_and_ssrf(monkeypatch):
     Handler = server.make_handler("secret")
     class F:
         def __init__(self, value):
+            """
+            Initialize a fake authenticated request containing the provided input value.
+            
+            Parameters:
+                value (str): Input value to include in the request body.
+            """
             body = ('{"input":"' + value + '"}').encode(); self.path="/process"; self.rfile=BytesIO(body); self.wfile=BytesIO(); self.headers={"Authorization":"Bearer secret", "Content-Length":str(len(body))}; self.responses=[]
         def send_response(self,s): self.responses.append(s)
         def send_header(self,*a): pass
@@ -123,7 +138,8 @@ def test_handler_queue_full(monkeypatch):
 
 def test_worker_success_and_failure_branches(monkeypatch, tmp_path):
     class Q:
-        def __init__(self, item): self.item=item; self.done=False
+        def __init__(self, item): """Initialize a queue item holder with the provided item."""
+self.item=item; self.done=False
         def get(self):
             if self.done: raise KeyboardInterrupt
             self.done=True; return self.item

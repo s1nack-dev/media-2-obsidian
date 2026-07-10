@@ -4,10 +4,17 @@ import bridge_client
 
 
 class Response:
-    def __init__(self, data): self.data = json.dumps(data).encode()
+    def __init__(self, data): """
+Store a JSON-encoded representation of the response data.
+
+Parameters:
+	data: The value to serialize and store as UTF-8 bytes.
+"""
+self.data = json.dumps(data).encode()
     def __enter__(self): return self
     def __exit__(self, *args): pass
-    def read(self): return self.data
+    def read(self): """Return the stored JSON payload as UTF-8 encoded bytes."""
+return self.data
 
 
 def test_auth_headers():

@@ -41,13 +41,31 @@ MAX_JSON_BYTES = 1_000_000  # transcripts are text, 1MB is already very generous
 
 
 def make_handler(cfg: dict, auth_token: str):
+    """
+    Create an HTTP request handler for the host bridge service.
+    
+    Parameters:
+    	cfg (dict): Configuration containing the Claude command.
+    	auth_token (str): Bearer token required for POST requests.
+    
+    Returns:
+    	type: A configured HTTP request handler class.
+    """
     claude_cmd = cfg["claude"]["command"]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
+            """Log an HTTP request message with the client's address."""
             log.info("%s - %s", self.address_string(), fmt % args)
 
         def _send_json(self, status: int, payload: dict) -> None:
+            """
+            Send a JSON response with the specified HTTP status and payload.
+            
+            Parameters:
+                status (int): HTTP status code for the response.
+                payload (dict): JSON-serializable response body.
+            """
             body = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -56,6 +74,12 @@ def make_handler(cfg: dict, auth_token: str):
             self.wfile.write(body)
 
         def _check_auth(self) -> bool:
+            """
+            Validate the request's bearer token and send an unauthorized response when authentication fails.
+            
+            Returns:
+                bool: `True` if the request has the expected bearer token, `False` otherwise.
+            """
             provided = self.headers.get("Authorization", "")
             if not secrets.compare_digest(provided, f"Bearer {auth_token}"):
                 self._send_json(401, {"error": "unauthorized"})
@@ -63,12 +87,14 @@ def make_handler(cfg: dict, auth_token: str):
             return True
 
         def do_GET(self):
+            """Handle health-check requests and return a not-found response for other paths."""
             if self.path == "/healthz":
                 self._send_json(200, {"status": "ok"})
             else:
                 self._send_json(404, {"error": "not found"})
 
         def do_POST(self):
+            """Authenticate the request and dispatch it to the appropriate POST endpoint."""
             if not self._check_auth():
                 return
 
@@ -82,6 +108,15 @@ def make_handler(cfg: dict, auth_token: str):
                 self._send_json(404, {"error": "not found"})
 
         def _handle_transcribe(self):
+            """
+            Transcribe an uploaded audio file using the requested model.
+            
+            Parameters:
+            	model_id (str): Identifier of the transcription model provided in the request query.
+            
+            Returns:
+            	JSON response containing the SRT-formatted and plain-text transcripts, or an error response for invalid input or transcription failure.
+            """
             from urllib.parse import parse_qs, urlparse
             query = parse_qs(urlparse(self.path).query)
             model_id = (query.get("model_id") or [None])[0]
@@ -115,6 +150,12 @@ def make_handler(cfg: dict, auth_token: str):
             self._send_json(200, {"srt_text": srt_text, "plain_text": plain_text})
 
         def _read_json_body(self) -> dict | None:
+            """
+            Read and parse the request body as JSON.
+            
+            Returns:
+                dict | None: The decoded JSON object, or `None` when the body is missing, oversized, or invalid.
+            """
             length = int(self.headers.get("Content-Length", 0) or 0)
             if length <= 0 or length > MAX_JSON_BYTES:
                 self._send_json(400, {"error": "missing or oversized request body"})
@@ -126,6 +167,14 @@ def make_handler(cfg: dict, auth_token: str):
                 return None
 
         def _handle_summarize(self):
+            """Generate a summary from the transcript in the JSON request body.
+            
+            Parameters:
+                transcript: The transcript text to summarize.
+            
+            Returns:
+                A JSON response containing the generated summary.
+            """
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -134,6 +183,7 @@ def make_handler(cfg: dict, auth_token: str):
             self._send_json(200, {"summary": summary})
 
         def _handle_tags(self):
+            """Generate tags for the transcript in the JSON request body and send them as a JSON response."""
             payload = self._read_json_body()
             if payload is None:
                 return
@@ -145,6 +195,9 @@ def make_handler(cfg: dict, auth_token: str):
 
 
 def main():
+    """
+    Start the host-native HTTP bridge service using command-line and configuration settings.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address. 127.0.0.1 is reachable from "

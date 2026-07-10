@@ -16,6 +16,17 @@ host_bridge = importlib.import_module("host_bridge")
 
 
 def _handler(path, body=b"", auth="Bearer token"):
+    """
+    Create a simulated HTTP handler configured for testing.
+    
+    Parameters:
+        path: The request path.
+        body: The request body.
+        auth: The request's Authorization header value.
+    
+    Returns:
+        A handler instance with simulated request and response streams.
+    """
     H = host_bridge.make_handler({"claude": {"command": "claude"}}, "token")
     class F:
         def send_response(self, s): self.status = s

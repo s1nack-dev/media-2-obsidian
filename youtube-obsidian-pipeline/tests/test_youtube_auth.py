@@ -9,7 +9,16 @@ def test_auth_main_writes_token(tmp_path, monkeypatch):
     class Creds:
         def to_json(self): return json.dumps({"token":"x"})
     class Flow:
-        def run_local_server(self, port=0): return Creds()
+        def run_local_server(self, port=0): """
+Provide credentials for local-server authentication.
+
+Parameters:
+    port (int): Port requested for the local authentication server.
+
+Returns:
+    Creds: Authentication credentials.
+"""
+return Creds()
     monkeypatch.setattr(youtube_auth.InstalledAppFlow, "from_client_config", lambda config, scopes: Flow())
     monkeypatch.setattr(youtube_auth, "subprocess", type("S", (), {"run": staticmethod(lambda *a, **k: type("R", (), {"stdout":"value"})())}))
     monkeypatch.setattr(sys, "argv", ["youtube_auth.py", "--config", str(config)])
