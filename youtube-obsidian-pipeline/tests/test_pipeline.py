@@ -82,7 +82,8 @@ def test_audio_download_and_title(monkeypatch, tmp_path):
 
 def test_download_direct_file_validates_and_writes(monkeypatch, tmp_path):
     class Response:
-        url = "https://example/a.mp3"
+        status = 200
+        reason = "OK"
         done = False
         def __enter__(self): return self
         def __exit__(self, *args): pass
@@ -90,8 +91,7 @@ def test_download_direct_file_validates_and_writes(monkeypatch, tmp_path):
             if self.done: return b""
             self.done = True
             return b"payload"
-    monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
-    monkeypatch.setattr(pipeline.urllib.request, "build_opener", lambda *a: type("O", (), {"addheaders": [], "open": lambda self, req, timeout: Response()})())
+    monkeypatch.setattr(pipeline, "_open_pinned", lambda url, timeout: (Response(), "example"))
     path = pipeline.download_direct_file("https://example/a.mp3", tmp_path)
     assert path.read_bytes() == b"payload"
 
@@ -107,13 +107,48 @@ def test_find_sidecar_supports_common_extensions(tmp_path):
 def test_resolve_overcast_episode(monkeypatch):
     page = b'<a href="https://feed.example/rss"><img src="/img/badge-rss.svg"></a><h2 class="title">Episode One</h2>'
     rss = b'<rss><channel><item><title>Episode One</title><enclosure url="https://cdn.example/e.mp3" /></item></channel></rss>'
-    class R:
-        def __init__(self, data): self.data = data
-        def read(self): """Return the stored response data."""
-return self.data
+    responses = iter((page, rss))
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
-    monkeypatch.setattr(pipeline, "urlopen", lambda req, timeout: R(page if "overcast" in req.full_url else rss))
+    monkeypatch.setattr(pipeline, "_safe_urlopen_with_validation", lambda url, timeout: next(responses))
     assert pipeline.resolve_overcast_episode("https://overcast.fm/+abc") == ("Episode One", "https://cdn.example/e.mp3")
+
+
+def test_download_direct_file_revalidates_each_redirect(monkeypatch, tmp_path):
+    class Response:
+        reason = "OK"
+
+        def __init__(self, status, location=None, body=b""):
+            self.status = status
+            self.location = location
+            self.body = body
+            self.done = False
+
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def getheader(self, name):
+            return self.location if name == "Location" else None
+        def read(self, *args):
+            if self.done:
+                return b""
+            self.done = True
+            return self.body
+
+    opened = []
+
+    def open_pinned(url, timeout):
+        opened.append(url)
+        if len(opened) == 1:
+            return Response(302, "/final.mp3"), "first.example"
+        return Response(200, body=b"payload"), "first.example"
+
+    monkeypatch.setattr(pipeline, "_open_pinned", open_pinned)
+    path = pipeline.download_direct_file("https://first.example/audio.mp3", tmp_path)
+
+    assert opened == [
+        "https://first.example/audio.mp3",
+        "https://first.example/final.mp3",
+    ]
+    assert path.read_bytes() == b"payload"
 
 
 def test_process_input_raises_when_no_audio_or_subtitles(tmp_path, monkeypatch):

@@ -22,8 +22,8 @@ class _Playlist:
 
 
 class _Service:
-    def __init__(self): """Initialize a service with a playlist client."""
-self.p = _Playlist()
+    def __init__(self):
+        self.p = _Playlist()
     def playlistItems(self): return self.p
 
 

@@ -138,8 +138,8 @@ def test_handler_queue_full(monkeypatch):
 
 def test_worker_success_and_failure_branches(monkeypatch, tmp_path):
     class Q:
-        def __init__(self, item): """Initialize a queue item holder with the provided item."""
-self.item=item; self.done=False
+        def __init__(self, item):
+            self.item=item; self.done=False
         def get(self):
             if self.done: raise KeyboardInterrupt
             self.done=True; return self.item

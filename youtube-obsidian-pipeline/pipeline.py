@@ -29,10 +29,13 @@ See README.md for full setup instructions.
 """
 import argparse
 import html
+import http.client
 import logging
 import os
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -41,7 +44,6 @@ import urllib.request
 from difflib import get_close_matches
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request
 
 import defusedxml.ElementTree as ET
 
@@ -271,19 +273,6 @@ def _sanitize_filename(raw_filename: str) -> str:
     return sanitized if sanitized else "download"
 
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """
-    Disables urllib's automatic redirect-following. Returning None from
-    redirect_request() causes the redirect handlers to raise HTTPError with
-    the original 3xx status instead of transparently issuing a second,
-    unvalidated request - which is what let SSRF-via-redirect bypass
-    validate_public_url() before.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
 def _open_pinned(url: str, timeout: int) -> tuple:
     """
     Validate url, resolve it to an approved public IP, and open a connection
@@ -296,12 +285,24 @@ def _open_pinned(url: str, timeout: int) -> tuple:
     validated_ip, hostname = resolve_and_validate_url(url)
 
     parsed = urlparse(url)
-    netloc = f"{validated_ip}:{parsed.port}" if parsed.port else validated_ip
-    pinned_url = parsed._replace(netloc=netloc).geturl()
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    host_header = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    target = parsed.path or "/"
+    if parsed.query:
+        target += f"?{parsed.query}"
 
-    req = Request(pinned_url, headers={**_HTTP_HEADERS, "Host": hostname})
-    opener = urllib.request.build_opener(_NoRedirectHandler)
-    return opener.open(req, timeout=timeout), hostname
+    if parsed.scheme == "https":
+        class PinnedHTTPSConnection(http.client.HTTPSConnection):
+            def connect(self):
+                sock = socket.create_connection((validated_ip, port), self.timeout)
+                self.sock = self._context.wrap_socket(sock, server_hostname=hostname)
+
+        conn = PinnedHTTPSConnection(hostname, port, timeout=timeout, context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(validated_ip, port, timeout=timeout)
+
+    conn.request("GET", target, headers={**_HTTP_HEADERS, "Host": host_header})
+    return conn.getresponse(), hostname
 
 
 def _download_with_redirect_validation(url: str, dest: Path, max_redirects: int = 5) -> None:
@@ -319,19 +320,20 @@ def _download_with_redirect_validation(url: str, dest: Path, max_redirects: int 
     current_url = url
 
     for _ in range(max_redirects + 1):
-        try:
-            resp, _hostname = _open_pinned(current_url, timeout=1800)
-        except urllib.error.HTTPError as e:
-            if e.code not in (301, 302, 303, 307, 308):
-                raise
-            location = e.headers.get("Location")
+        resp, _hostname = _open_pinned(current_url, timeout=1800)
+        if resp.status in (301, 302, 303, 307, 308):
+            with resp:
+                location = resp.getheader("Location")
             if not location:
-                raise ValueError(f"Redirect response {e.code} without Location header") from e
+                raise ValueError(f"Redirect response {resp.status} without Location header")
             if not location.startswith(("http://", "https://")):
                 location = urllib.parse.urljoin(current_url, location)
             log.info("Following redirect from %s to %s", current_url, location)
             current_url = location
             continue
+        if not 200 <= resp.status < 300:
+            with resp:
+                raise OSError(f"HTTP request failed with status {resp.status} {resp.reason}")
 
         # No redirect (validated, connected, and pinned) - download the response
         with resp, open(dest, "wb") as f:
@@ -387,12 +389,13 @@ def _safe_urlopen_with_validation(url: str, timeout: int = 30) -> bytes:
     Raises:
         ValueError: If validation fails or a redirect is encountered.
     """
-    try:
-        resp, _hostname = _open_pinned(url, timeout=timeout)
-    except urllib.error.HTTPError as e:
-        if e.code in (301, 302, 303, 307, 308):
-            raise ValueError(f"URL {url} returned redirect {e.code} (use redirect-aware download)") from e
-        raise
+    resp, _hostname = _open_pinned(url, timeout=timeout)
+    if resp.status in (301, 302, 303, 307, 308):
+        with resp:
+            raise ValueError(f"URL {url} returned redirect {resp.status} (use redirect-aware download)")
+    if not 200 <= resp.status < 300:
+        with resp:
+            raise OSError(f"HTTP request failed with status {resp.status} {resp.reason}")
     with resp:
         return resp.read()
 
