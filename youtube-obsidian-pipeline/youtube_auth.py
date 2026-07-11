@@ -13,6 +13,7 @@ there, then copy the resulting token.json over to the server.
 """
 
 import argparse
+import os
 import subprocess
 import yaml
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -69,6 +70,8 @@ def main():
 
     with open(token_file, "w") as f:
         f.write(creds.to_json())
+
+    os.chmod(token_file, 0o600)
 
     print(f"Saved credentials to {token_file}. You can now run pipeline.py.")
 
