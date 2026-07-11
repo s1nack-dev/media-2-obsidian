@@ -1,6 +1,19 @@
+import sys
+
+import pytest
+
 import claude_client
 
+# sandbox-exec is macOS-only (Seatbelt). CI runs on Linux, where it doesn't
+# exist, so _run_claude always takes the safe-mode fallback there regardless
+# of what these tests assert. Skip rather than fake shutil.which - these
+# tests should verify real host behavior, not a simulated one.
+requires_sandbox_exec = pytest.mark.skipif(
+    sys.platform != "darwin", reason="sandbox-exec (Seatbelt) is macOS-only"
+)
 
+
+@requires_sandbox_exec
 def test_summarize_retries_polluted_response(monkeypatch):
     responses = [
         type("R", (), {"returncode": 0, "stdout": "planning...", "stderr": ""})(),
@@ -55,6 +68,7 @@ def test_summarize_failure(monkeypatch):
     )
 
 
+@requires_sandbox_exec
 def test_summarize_falls_back_when_macos_rejects_sandbox(monkeypatch):
     responses = [
         type(
