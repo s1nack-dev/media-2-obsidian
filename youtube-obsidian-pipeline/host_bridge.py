@@ -186,10 +186,31 @@ def make_handler(cfg: dict, auth_token: str, claude_oauth_token: str | None = No
                 self._send_json(400, {"error": "missing or oversized request body"})
                 return None
             try:
-                return json.loads(self.rfile.read(length))
+                payload = json.loads(self.rfile.read(length))
             except json.JSONDecodeError:
                 self._send_json(400, {"error": "invalid JSON body"})
                 return None
+            if not isinstance(payload, dict):
+                self._send_json(400, {"error": "JSON body must be an object"})
+                return None
+            return payload
+
+        def _validated_transcript(self, payload: dict) -> str | None:
+            """Validate and normalize transcript text from a request payload."""
+            transcript = payload.get("transcript", "")
+            if not isinstance(transcript, str):
+                self._send_json(400, {"error": "transcript must be a string"})
+                return None
+            transcript = (
+                transcript.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+            )
+            if not transcript.strip():
+                self._send_json(400, {"error": "transcript is required"})
+                return None
+            if len(transcript) > MAX_JSON_BYTES:
+                self._send_json(400, {"error": "transcript is too large"})
+                return None
+            return transcript
 
         def _handle_summarize(self):
             """Generate a summary from the transcript in the JSON request body.
@@ -203,7 +224,9 @@ def make_handler(cfg: dict, auth_token: str, claude_oauth_token: str | None = No
             payload = self._read_json_body()
             if payload is None:
                 return
-            transcript = payload.get("transcript", "")
+            transcript = self._validated_transcript(payload)
+            if transcript is None:
+                return
             log.info(
                 "Summary generation started (transcript_chars=%d).", len(transcript)
             )
@@ -220,7 +243,9 @@ def make_handler(cfg: dict, auth_token: str, claude_oauth_token: str | None = No
             payload = self._read_json_body()
             if payload is None:
                 return
-            transcript = payload.get("transcript", "")
+            transcript = self._validated_transcript(payload)
+            if transcript is None:
+                return
             log.info("Tag generation started (transcript_chars=%d).", len(transcript))
             tags = generate_tags_with_claude(claude_cmd, transcript, claude_oauth_token)
             self._send_json(200, {"tags": tags})
