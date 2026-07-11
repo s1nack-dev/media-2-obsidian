@@ -149,9 +149,8 @@ Both calls treat transcript text as untrusted. On the native Mac host, the
 pipeline wraps Claude Code in a fail-closed macOS Seatbelt sandbox: safe mode
 disables customizations and built-in tools, the sandbox blocks access to the
 checkout and the rest of your home directory, and networking is limited to
-outbound HTTPS. The CLI retains access only to its installation, its OAuth
-credentials/Keychain entry, and temporary storage so it can authenticate and
-return text.
+outbound HTTPS. The CLI retains access only to its installation, its file-based
+OAuth state, and temporary storage so it can authenticate and return text.
 
 Install and log in once, interactively:
 
