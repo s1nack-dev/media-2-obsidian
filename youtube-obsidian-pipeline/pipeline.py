@@ -701,6 +701,8 @@ def process_input(
                 )
                 lang = "parakeet"
             else:
+                validate_public_url(raw_input)
+
                 if title is None:
                     title = fetch_title_via_ytdlp(raw_input)
 
