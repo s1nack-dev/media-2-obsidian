@@ -16,11 +16,11 @@
 #
 # config.yaml and token.json are bind-mounted from the parent directory. The
 # container-only playlist state and shared processing lock live together in
-# .pipeline-runtime/, a directory bind mount that Docker can create safely on
-# a fresh host. The two repo clone directories are bind-mounted at the SAME
-# absolute paths named in config.yaml's subtitles_repo_path/vault_repo_path,
-# for the same reason (so config.yaml doesn't need container-specific path
-# overrides).
+# a named Docker volume (pipeline-runtime), which Docker manages with correct
+# ownership automatically. The two repo clone directories are bind-mounted at
+# the SAME absolute paths named in config.yaml's
+# subtitles_repo_path/vault_repo_path, for the same reason (so config.yaml
+# doesn't need container-specific path overrides).
 #
 # Usage:
 #   cp ../.env.example ../.env
@@ -73,9 +73,7 @@ services:
     volumes:
       - ../config.yaml:/app/config.yaml:ro
       - ../token.json:/app/token.json
-      # Directory bind mounts are created reliably on a fresh host. Both
-      # services flock this same file through PIPELINE_LOCK_FILE.
-      - ../.pipeline-runtime:/app/.pipeline-runtime
+      - pipeline-runtime:/app/.pipeline-runtime
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:
@@ -100,7 +98,7 @@ services:
     volumes:
       - ../config.yaml:/app/config.yaml:ro
       - ../token.json:/app/token.json
-      - ../.pipeline-runtime:/app/.pipeline-runtime
+      - pipeline-runtime:/app/.pipeline-runtime
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:
@@ -108,3 +106,6 @@ services:
 
 networks:
   pipeline:
+
+volumes:
+  pipeline-runtime:
