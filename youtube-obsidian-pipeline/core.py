@@ -557,8 +557,12 @@ def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str
 
 
 def _sanitize_git_output(text: str) -> str:
-    """Redacts x-access-token:<token>@ patterns from git command output."""
-    return re.sub(r"x-access-token:[^@]+@", "x-access-token:REDACTED@", text)
+    """Redact tokens embedded in Git URLs and credential-helper values."""
+    text = re.sub(r"x-access-token:[^@]+@", "x-access-token:REDACTED@", text)
+    text = re.sub(r"password=[^\s;'\"]+", "password=REDACTED", text)
+    return re.sub(
+        r"credential\.helper(?:=|\s+)[^\r\n]*", "credential.helper=REDACTED", text
+    )
 
 
 GIT_TIMEOUT_SECONDS = 300

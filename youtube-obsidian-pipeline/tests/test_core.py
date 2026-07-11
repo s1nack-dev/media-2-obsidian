@@ -197,6 +197,46 @@ def test_run_git_redacts_token(monkeypatch, tmp_path):
         core.run_git(["push", credential_url], tmp_path)
 
 
+def test_run_git_redacts_credential_helper_token(monkeypatch, tmp_path):
+    token = "helper-secret"
+    helper = f"credential.helper=!f() {{ echo password={token}; }}; f"
+    monkeypatch.setattr(
+        core.subprocess,
+        "run",
+        lambda *a, **k: type(
+            "R", (), {"returncode": 1, "stdout": "", "stderr": f"password={token}"}
+        )(),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        core.run_git(["-c", helper, "fetch"], tmp_path)
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "credential.helper=REDACTED" in message
+    assert "password=REDACTED" in message
+
+
+def test_run_git_timeout_redacts_credential_helper_token(monkeypatch, tmp_path):
+    token = "helper-secret"
+    helper = f"credential.helper=!f() {{ echo password={token}; }}; f"
+
+    def timeout(*args, **kwargs):
+        raise core.subprocess.TimeoutExpired(
+            args[0], kwargs["timeout"], output=b"", stderr=f"password={token}".encode()
+        )
+
+    monkeypatch.setattr(core.subprocess, "run", timeout)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        core.run_git(["-c", helper, "fetch"], tmp_path)
+
+    message = str(exc_info.value)
+    assert token not in message
+    assert "credential.helper=REDACTED" in message
+    assert "password=REDACTED" in message
+
+
 def test_ensure_repo_clone_and_update(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(core, "run_git", lambda args, cwd: calls.append((args, cwd)))
