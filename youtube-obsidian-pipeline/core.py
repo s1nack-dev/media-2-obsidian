@@ -93,6 +93,7 @@ def notify(cfg: dict, subject: str, message: str) -> None:
                 data=body,
                 headers={"Content-Type": "application/json"},
             )
+
             # Disable automatic HTTP redirects to prevent redirect-based attacks
             class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
                 def http_error_302(self, req, fp, code, msg, headers):
@@ -644,9 +645,7 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
     # Build a credential helper that echoes the token for this one operation.
     # Git will invoke this helper when it needs authentication, and the token
     # never gets written to .git/config.
-    cred_helper = (
-        f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
-    )
+    cred_helper = f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
 
     if not (path / ".git").exists():
         # Not yet a real clone. Deliberately checking for .git rather than
@@ -660,13 +659,24 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
         # beyond picking the right branch here.
         path.mkdir(parents=True, exist_ok=True)
         run_git(
-            ["-c", f"credential.helper={cred_helper}", "clone", "--branch", branch, repo_url, str(path)],
+            [
+                "-c",
+                f"credential.helper={cred_helper}",
+                "clone",
+                "--branch",
+                branch,
+                repo_url,
+                str(path),
+            ],
             cwd=path.parent,
         )
     else:
         # Ensure origin is set to the clean URL (no embedded token)
         run_git(["remote", "set-url", "origin", repo_url], cwd=path)
-        run_git(["-c", f"credential.helper={cred_helper}", "fetch", "origin", branch], cwd=path)
+        run_git(
+            ["-c", f"credential.helper={cred_helper}", "fetch", "origin", branch],
+            cwd=path,
+        )
         run_git(["checkout", branch], cwd=path)
         run_git(["reset", "--hard", f"origin/{branch}"], cwd=path)
     run_git(["config", "core.ignorecase", "false"], cwd=path)
@@ -710,10 +720,11 @@ def commit_and_push(
         return
     run_git(["commit", "-m", message], cwd=repo_path)
     # Use ephemeral credential helper for authenticated push
-    cred_helper = (
-        f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
+    cred_helper = f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
+    run_git(
+        ["-c", f"credential.helper={cred_helper}", "push", "origin", "HEAD"],
+        cwd=repo_path,
     )
-    run_git(["-c", f"credential.helper={cred_helper}", "push", "origin", "HEAD"], cwd=repo_path)
 
 
 # --------------------------------------------------------------------------

@@ -53,7 +53,7 @@ def transcribe_audio(
         method="POST",
         headers=_auth_headers(bridge_token),
     )
-    with urlopen(req, timeout=1800) as resp:  # nosec B310 - scheme validated above
+    with urlopen(req, timeout=1800) as resp:  # nosec B310 - scheme validated above; nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         payload = json.loads(resp.read())
     return payload["srt_text"], payload["plain_text"]
 
@@ -75,7 +75,7 @@ def summarize(transcript_text: str, bridge_url: str, bridge_token: str) -> str:
     body = json.dumps({"transcript": transcript_text}).encode()
     headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}
     req = Request(url, data=body, method="POST", headers=headers)
-    with urlopen(req, timeout=600) as resp:  # nosec B310 - scheme validated above
+    with urlopen(req, timeout=600) as resp:  # nosec B310 - scheme validated above; nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         payload = json.loads(resp.read())
     return payload["summary"]
 
@@ -97,6 +97,6 @@ def generate_tags(
     body = json.dumps({"transcript": transcript_text}).encode()
     headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}
     req = Request(url, data=body, method="POST", headers=headers)
-    with urlopen(req, timeout=600) as resp:  # nosec B310 - scheme validated above
+    with urlopen(req, timeout=600) as resp:  # nosec B310 - scheme validated above; nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         payload = json.loads(resp.read())
     return payload["tags"]

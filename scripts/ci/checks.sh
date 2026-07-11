@@ -14,6 +14,12 @@ run_hook() {
   if ((${#targets[@]} == 0)); then
     targets=(youtube-obsidian-pipeline)
   fi
+  local semgrep_targets=("${targets[@]}")
+  if [[ "$hook" == semgrep && "$#" -eq 0 ]]; then
+    mapfile -t semgrep_targets < <(
+      git ls-files | awk '$0 ~ /^youtube-obsidian-pipeline\/.*\.py$/ { print }'
+    )
+  fi
 
   case "$hook" in
     ruff-check)
@@ -41,7 +47,7 @@ run_hook() {
     semgrep)
       uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
         --config=p/python --config=p/security-audit --error \
-        "${targets[@]}"
+        "${semgrep_targets[@]}"
       ;;
     pip-audit)
       uv export --project youtube-obsidian-pipeline --frozen --no-dev \

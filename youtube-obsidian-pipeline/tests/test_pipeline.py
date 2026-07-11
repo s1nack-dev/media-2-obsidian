@@ -394,7 +394,9 @@ def test_process_input_raises_no_transcript_available_when_no_subs_or_audio(
     # Mock fetch_title_via_ytdlp to return a title
     monkeypatch.setattr(pipeline, "fetch_title_via_ytdlp", lambda url: "Test Video")
 
-    with pytest.raises(pipeline.NoTranscriptAvailableError, match="No subtitles or transcribable audio"):
+    with pytest.raises(
+        pipeline.NoTranscriptAvailableError, match="No subtitles or transcribable audio"
+    ):
         pipeline.process_input(
             "https://www.youtube.com/watch?v=test_vid",
             cfg,

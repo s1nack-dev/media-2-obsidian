@@ -140,8 +140,8 @@ def run_once(cfg: dict) -> None:
         bridge_token = resolve_secret(
             "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
         )
-    except subprocess.CalledProcessError as e:
-        log.error("Failed to read a secret from 1Password: %s", e)
+    except subprocess.CalledProcessError:
+        log.error("Failed to read a secret from 1Password")
         sys.exit(1)
 
     service = get_youtube_service(cfg)

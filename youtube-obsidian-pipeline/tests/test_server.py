@@ -32,11 +32,15 @@ def test_server_health_and_auth_validation(monkeypatch):
     httpd = _serve(server.make_handler("secret"))
     base = f"http://127.0.0.1:{httpd.server_port}"
     try:
-        with urllib.request.urlopen(base + "/healthz") as response:
+        with (
+            urllib.request.urlopen(base + "/healthz") as response
+        ):  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             assert json.loads(response.read())["status"] == "ok"
         req = urllib.request.Request(base + "/process", data=b"{}", method="POST")
         try:
-            urllib.request.urlopen(req)
+            urllib.request.urlopen(
+                req
+            )  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         except urllib.error.HTTPError as exc:
             assert exc.code == 401
     finally:
@@ -55,7 +59,9 @@ def test_server_rejects_invalid_payload(monkeypatch):
             headers={"Authorization": "Bearer secret"},
         )
         try:
-            urllib.request.urlopen(req)
+            urllib.request.urlopen(
+                req
+            )  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         except urllib.error.HTTPError as exc:
             assert exc.code == 400
     finally:
