@@ -65,12 +65,36 @@ def test_bridge_auth_and_health():
 
 
 def test_bridge_json_validation():
-    h = _handler("/summarize", b"bad")
-    h.do_POST()
-    assert h.status == 400
+    for path in ("/summarize", "/tags"):
+        for body in (b"bad", b"[]", b'"text"', b"1", b"null"):
+            h = _handler(path, body)
+            h.do_POST()
+            assert h.status == 400
     h = _handler("/summarize", b"")
     h.do_POST()
     assert h.status == 400
+
+
+def test_bridge_transcript_validation(monkeypatch):
+    called = False
+
+    def summarize(*args):
+        nonlocal called
+        called = True
+        return "summary"
+
+    monkeypatch.setattr(host_bridge, "summarize_with_claude", summarize)
+    monkeypatch.setattr(host_bridge, "generate_tags_with_claude", lambda *args: ["tag"])
+    for path in ("/summarize", "/tags"):
+        for body in (
+            b'{"transcript":"\\u0000\\u0000"}',
+            b'{"transcript":"   "}',
+            b'{"transcript":123}',
+        ):
+            h = _handler(path, body)
+            h.do_POST()
+            assert h.status == 400
+    assert not called
 
 
 def test_bridge_summary_and_tags(monkeypatch):
