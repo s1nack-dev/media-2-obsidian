@@ -151,6 +151,41 @@ def test_download_direct_file_revalidates_each_redirect(monkeypatch, tmp_path):
     assert path.read_bytes() == b"payload"
 
 
+def test_safe_urlopen_revalidates_each_redirect(monkeypatch):
+    class Response:
+        reason = "OK"
+
+        def __init__(self, status, location=None, body=b""):
+            self.status = status
+            self.location = location
+            self.body = body
+
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def getheader(self, name): return self.location if name == "Location" else None
+        def read(self): return self.body
+
+    opened = []
+
+    def open_pinned(url, timeout):
+        opened.append(url)
+        if len(opened) == 1:
+            return Response(302, "https://feed.example/rss"), "overcast.fm"
+        return Response(200, body=b"feed"), "feed.example"
+
+    monkeypatch.setattr(pipeline, "_open_pinned", open_pinned)
+    assert pipeline._safe_urlopen_with_validation("https://overcast.fm/+abc") == b"feed"
+    assert opened == ["https://overcast.fm/+abc", "https://feed.example/rss"]
+
+
+@pytest.mark.parametrize("url", ["https://example.com/.", "https://example.com/..", "https://example.com/"])
+def test_download_direct_file_uses_safe_default_filename(monkeypatch, tmp_path, url):
+    monkeypatch.setattr(pipeline, "_download_with_redirect_validation", lambda source, dest: dest.write_bytes(b"x"))
+    path = pipeline.download_direct_file(url, tmp_path)
+    assert path == tmp_path / "download"
+    assert path.read_bytes() == b"x"
+
+
 def test_process_input_raises_when_no_audio_or_subtitles(tmp_path, monkeypatch):
     media = tmp_path / "empty.mp3"; media.write_bytes(b"x")
     cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}, "youtube": {"subtitle_languages": ["en"]}}

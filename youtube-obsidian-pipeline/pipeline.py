@@ -264,7 +264,9 @@ def _sanitize_filename(raw_filename: str) -> str:
         return "download"
 
     # Remove any remaining path separators and dangerous characters
-    sanitized = basename.replace(os.sep, "_").replace(os.altsep or "", "_")
+    sanitized = basename.replace(os.sep, "_")
+    if os.altsep:
+        sanitized = sanitized.replace(os.altsep, "_")
 
     # Ensure it doesn't start with a dot (hidden file) or dash (could be interpreted as flag)
     sanitized = sanitized.lstrip(".-")
@@ -375,9 +377,9 @@ _OVERCAST_RSS_LINK_RE = re.compile(r'href="([^"]+)"\s*><img src="/img/badge-rss\
 _OVERCAST_EPISODE_TITLE_RE = re.compile(r'<h2[^>]*class="title"[^>]*>([^<]+)</h2>')
 
 
-def _safe_urlopen_with_validation(url: str, timeout: int = 30) -> bytes:
+def _safe_urlopen_with_validation(url: str, timeout: int = 30, max_redirects: int = 5) -> bytes:
     """
-    Open a URL with IP pinning to prevent DNS rebinding, without following redirects.
+    Open a URL with IP pinning, revalidating and repinning every redirect hop.
 
     Parameters:
         url (str): URL to fetch.
@@ -387,17 +389,25 @@ def _safe_urlopen_with_validation(url: str, timeout: int = 30) -> bytes:
         bytes: Response body.
 
     Raises:
-        ValueError: If validation fails or a redirect is encountered.
+        ValueError: If validation fails or the redirect limit is exceeded.
     """
-    resp, _hostname = _open_pinned(url, timeout=timeout)
-    if resp.status in (301, 302, 303, 307, 308):
+    current_url = url
+    for _ in range(max_redirects + 1):
+        resp, _hostname = _open_pinned(current_url, timeout=timeout)
+        if resp.status in (301, 302, 303, 307, 308):
+            with resp:
+                location = resp.getheader("Location")
+            if not location:
+                raise ValueError(f"Redirect response {resp.status} without Location header")
+            current_url = urllib.parse.urljoin(current_url, location)
+            continue
+        if not 200 <= resp.status < 300:
+            with resp:
+                raise OSError(f"HTTP request failed with status {resp.status} {resp.reason}")
         with resp:
-            raise ValueError(f"URL {url} returned redirect {resp.status} (use redirect-aware download)")
-    if not 200 <= resp.status < 300:
-        with resp:
-            raise OSError(f"HTTP request failed with status {resp.status} {resp.reason}")
-    with resp:
-        return resp.read()
+            return resp.read()
+
+    raise ValueError(f"Too many redirects (>{max_redirects}) when fetching {url}")
 
 
 def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
