@@ -14,12 +14,13 @@
 # `op run --env-file` before `docker compose` ever runs, then passed
 # straight through as plain env vars - see core.py's resolve_secret().
 #
-# config.yaml, state.json, and token.json are bind-mounted from the
-# parent directory so there's exactly one copy shared between the native
-# host_bridge.py and these containers - no config drift. The two repo
-# clone directories are bind-mounted at the SAME absolute paths named in
-# config.yaml's subtitles_repo_path/vault_repo_path, for the same reason
-# (so config.yaml doesn't need container-specific path overrides).
+# config.yaml and token.json are bind-mounted from the parent directory. The
+# container-only playlist state and shared processing lock live together in
+# .pipeline-runtime/, a directory bind mount that Docker can create safely on
+# a fresh host. The two repo clone directories are bind-mounted at the SAME
+# absolute paths named in config.yaml's subtitles_repo_path/vault_repo_path,
+# for the same reason (so config.yaml doesn't need container-specific path
+# overrides).
 #
 # Usage:
 #   cp ../.env.example ../.env
@@ -68,11 +69,13 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
       - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN}
+      - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
     volumes:
       - ../config.yaml:/app/config.yaml:ro
-      - ../state.json:/app/state.json
       - ../token.json:/app/token.json
-      - ../pipeline.lock:/app/pipeline.lock
+      # Directory bind mounts are created reliably on a fresh host. Both
+      # services flock this same file through PIPELINE_LOCK_FILE.
+      - ../.pipeline-runtime:/app/.pipeline-runtime
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:
@@ -92,11 +95,12 @@ services:
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
+      - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
+      - PIPELINE_STATE_FILE=/app/.pipeline-runtime/state.json
     volumes:
       - ../config.yaml:/app/config.yaml:ro
-      - ../state.json:/app/state.json
       - ../token.json:/app/token.json
-      - ../pipeline.lock:/app/pipeline.lock
+      - ../.pipeline-runtime:/app/.pipeline-runtime
       - ${SUBTITLES_REPO_HOST_PATH}:${SUBTITLES_REPO_HOST_PATH}
       - ${VAULT_REPO_HOST_PATH}:${VAULT_REPO_HOST_PATH}
     networks:

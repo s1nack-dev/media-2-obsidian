@@ -1,7 +1,8 @@
 """
 Shared helpers used by both pipeline.py (single-input processor) and
 fetch_playlist.py (YouTube playlist polling + retry loop): config/state
-I/O, notifications, git helpers, summarization, and Obsidian note building.
+I/O, notifications, git helpers, and Obsidian note building. Claude
+summarization/tagging lives in claude_client.py.
 """
 
 import contextlib
@@ -168,6 +169,11 @@ def load_state(path: str) -> dict:
     return {"processed_video_ids": [], "failed_attempts": {}}
 
 
+def resolve_state_path(cfg: dict) -> str:
+    """Return the configured state path, honoring a container-specific override."""
+    return os.environ.get("PIPELINE_STATE_FILE", cfg["state_file"])
+
+
 def save_state(path: str, state: dict) -> None:
     """
     Save pipeline state as indented JSON at the specified path.
@@ -195,6 +201,15 @@ def pipeline_lock(lock_path: str):
             yield
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def resolve_lock_path(cfg: dict) -> str:
+    """Return the configured lock path, honoring a container-specific override.
+
+    ``PIPELINE_LOCK_FILE`` lets the compose services use one known shared bind
+    mount without changing the user's native ``config.yaml``.
+    """
+    return os.environ.get("PIPELINE_LOCK_FILE", cfg.get("lock_file", "pipeline.lock"))
 
 
 # --------------------------------------------------------------------------
@@ -353,221 +368,6 @@ def srt_to_plain_text(srt_path: Path) -> str:
         if not deduped or deduped[-1] != line:
             deduped.append(line)
     return " ".join(deduped)
-
-
-# --------------------------------------------------------------------------
-# Summarization via Claude Code CLI (uses your subscription, not API billing)
-# --------------------------------------------------------------------------
-
-SUMMARY_PROMPT_TEMPLATE = """You are an expert executive assistant and strategic analyst.
-Your task is to transform a raw meeting transcription into a structured, decision-focused meeting summary suitable for leadership review and archival.
-
-Carefully analyze the transcription for:
-
-- Objectives and meeting context
-- Key decisions and their rationale
-- Tradeoffs discussed
-- Risks and constraints
-- Metrics, targets, or KPIs mentioned
-- Stakeholder positions or disagreements
-- Dependencies and blockers
-- Explicit and implicit action items
-
-Generate the report using the following Markdown format structure:
-## SUMMARY
-- 4 to 8 concise but information-dense sentences.
-- Clearly state: purpose of the meeting, major outcomes, critical decisions, unresolved issues, and overall direction.
-- Focus on impact and implications, not just restating content.
-- Avoid filler language.
-
-## KEY DISCUSSION POINTS
-- 1 to 10 structured bullet points.
-- Group related points logically.
-- Each bullet must capture:
-- What was discussed
-- Why it matters
-- Any decision made
-- Tradeoffs, risks, or constraints (if mentioned)
-- Quantitative data when available
-
-- Prioritize signal over noise.
-- Do NOT repeat trivial conversational content.
-- If NO meaningful key discussion points, write: No key discussion points.
-
-## DECISIONS MADE
-- List only explicit decisions.
-- If no decisions were made, write: No formal decisions were made.
-
-## OPEN QUESTIONS / RISKS
-- List unresolved issues, concerns, or risks.
-- If none exist, write: No major open risks identified.
-
-## ACTION ITEMS
-- 3 to 15 bullet points if present.
-- Format: Action – Owner (if mentioned) – Deadline (if mentioned)
-- Only include owner/date when explicitly stated.
-- If none action items, write: No action items.
-- Do NOT invent assignments.
-
-IMPORTANT RULES:
-- Use the same language as the transcription.
-- Return ONLY markdown text.
-- Maintain strict transcript accuracy. ***NO EXTERNAL ADDITIONS***.
-- Eliminate filler, repetition, and small talk.
-
-Transcription:
-{transcription}"""
-
-
-_SUMMARY_MARKER = "## SUMMARY"
-_SUMMARIZE_ATTEMPTS = 2
-_CLAUDE_UNTRUSTED_INPUT_ARGS = [
-    "--safe-mode",
-    "--strict-mcp-config",
-    "--mcp-config",
-    "{}",
-    "--tools",
-    "",
-    "--disable-slash-commands",
-    "--no-session-persistence",
-]
-
-
-def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
-    """
-    Generate a transcript summary using the Claude CLI.
-
-    Parameters:
-        claude_cmd (str): Command used to invoke the Claude CLI.
-        transcript_text (str): Transcript text to summarize.
-
-    Returns:
-        str: The generated summary beginning with the expected summary heading, or a failure message if generation fails.
-    """
-    prompt = SUMMARY_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
-
-    # Harden the environment: clear inherited env vars to prevent leaking
-    # sensitive data via tools/MCP/plugins, and minimize filesystem access.
-    clean_env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", ""),
-        "USER": os.environ.get("USER", ""),
-    }
-
-    for attempt in range(1, _SUMMARIZE_ATTEMPTS + 1):
-        result = subprocess.run(
-            [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=clean_env,
-        )
-        if result.returncode != 0:
-            log.error(
-                "Claude CLI failed (attempt %d/%d): %s",
-                attempt,
-                _SUMMARIZE_ATTEMPTS,
-                result.stderr[-1000:],
-            )
-            continue
-
-        output = result.stdout.strip()
-        # Some claude CLI setups (e.g. with certain plugins/hooks enabled)
-        # prepend stray meta-commentary - or replace the response entirely
-        # with meta-commentary and no real summary at all (e.g. "I'm in
-        # plan mode..."). Our template always asks for "## SUMMARY" as the
-        # first heading, so require it: strip anything before it if
-        # present, or retry/fail if it's missing altogether rather than
-        # committing the meta-commentary as if it were the summary.
-        idx = output.find(_SUMMARY_MARKER)
-        if idx == -1:
-            log.warning(
-                "Claude CLI response missing the expected '%s' heading (attempt %d/%d) - "
-                "likely polluted by an ambient hook/plugin. Response started with: %r",
-                _SUMMARY_MARKER,
-                attempt,
-                _SUMMARIZE_ATTEMPTS,
-                output[:200],
-            )
-            continue
-        return output[idx:]
-
-    return "_Summary generation failed._"
-
-
-TAGS_PROMPT_TEMPLATE = """Analyze the following transcription and generate 3 to 8 relevant tags describing its content.
-
-Rules:
-- Tags must reflect specific topics, themes, people, organizations, or domains actually discussed - not generic words like "video", "podcast", "transcript", or "summary".
-- Each tag must be lowercase, using hyphens instead of spaces (e.g. "machine-learning", not "Machine Learning").
-- Return ONLY the tags, one per line, no numbering, no bullets, no other text.
-
-Transcription:
-{transcription}"""
-
-
-_MAX_TAG_LENGTH = 40
-
-
-def _sanitize_tag(raw: str) -> str:
-    """
-    Convert raw text into a normalized tag.
-
-    Parameters:
-        raw (str): The text to normalize.
-
-    Returns:
-        str: A lowercase tag with whitespace replaced by hyphens and unsupported characters removed.
-    """
-    tag = re.sub(r"\s+", "-", raw.strip().lower())
-    tag = re.sub(r"[^a-z0-9\-_/]", "", tag)
-    return tag.strip("-")
-
-
-def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str]:
-    """
-    Generate content tags from a transcript using Claude.
-
-    Parameters:
-        claude_cmd (str): Command used to invoke the Claude CLI.
-        transcript_text (str): Transcript from which to extract tags.
-
-    Returns:
-        list[str]: Ordered, unique, sanitized tags generated from the transcript, or an empty list if generation fails.
-    """
-    prompt = TAGS_PROMPT_TEMPLATE.format(transcription=transcript_text[:150000])
-
-    # Harden the environment: same pattern as summarize_with_claude.
-    clean_env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", ""),
-        "USER": os.environ.get("USER", ""),
-    }
-
-    result = subprocess.run(
-        [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env=clean_env,
-    )
-    if result.returncode != 0:
-        log.error("Claude CLI failed to generate tags: %s", result.stderr[-1000:])
-        return []
-
-    tags = []
-    for line in result.stdout.splitlines():
-        raw_line = line.lstrip("-*• ").strip()
-        # Some claude CLI setups (e.g. with certain plugins/hooks enabled)
-        # prepend a stray meta-commentary sentence before the actual tags.
-        # Real tags are short and punctuation-free - reject anything that
-        # reads like a sentence rather than a tag.
-        if not raw_line or any(c in raw_line for c in ".!?:;"):
-            continue
-        tag = _sanitize_tag(raw_line)
-        if tag and len(tag) <= _MAX_TAG_LENGTH and tag not in tags:
-            tags.append(tag)
-    return tags
 
 
 # --------------------------------------------------------------------------

@@ -28,13 +28,8 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from core import (
-    MAX_MEDIA_BYTES,
-    generate_tags_with_claude,
-    load_config,
-    resolve_secret,
-    summarize_with_claude,
-)
+from claude_client import generate_tags_with_claude, summarize_with_claude
+from core import MAX_MEDIA_BYTES, load_config, resolve_secret
 from transcribe_backend import transcribe_audio
 
 logging.basicConfig(
@@ -48,13 +43,15 @@ MAX_JSON_BYTES = 1_000_000  # transcripts are text, 1MB is already very generous
 REQUEST_TIMEOUT_SECONDS = 1800  # Matches the longest bridge client request timeout
 
 
-def make_handler(cfg: dict, auth_token: str):
+def make_handler(cfg: dict, auth_token: str, claude_oauth_token: str | None = None):
     """
     Create an HTTP request handler for the host bridge service.
 
     Parameters:
         cfg (dict): Configuration containing the Claude command.
         auth_token (str): Bearer token required for POST requests.
+        claude_oauth_token (str | None): Optional long-lived OAuth token for
+            Claude Code's noninteractive host-bridge process.
 
     Returns:
         type: A configured HTTP request handler class.
@@ -107,7 +104,13 @@ def make_handler(cfg: dict, auth_token: str):
 
         def do_POST(self):
             """Authenticate the request and dispatch it to the appropriate POST endpoint."""
+            log.info(
+                "Received %s request (content_length=%s).",
+                self.path,
+                self.headers.get("Content-Length", "unknown"),
+            )
             if not self._check_auth():
+                log.warning("Rejected %s request: invalid bridge token.", self.path)
                 return
 
             if self.path.startswith("/transcribe"):
@@ -142,6 +145,10 @@ def make_handler(cfg: dict, auth_token: str):
                 self._send_json(400, {"error": "missing or oversized audio body"})
                 return
 
+            log.info(
+                "Transcription started (model=%s; audio_bytes=%d).", model_id, length
+            )
+
             with tempfile.TemporaryDirectory(prefix="host-bridge-") as tmp:
                 audio_path = Path(tmp) / "audio"
                 remaining = length
@@ -161,6 +168,11 @@ def make_handler(cfg: dict, auth_token: str):
                     return
 
             self._send_json(200, {"srt_text": srt_text, "plain_text": plain_text})
+            log.info(
+                "Transcription succeeded (srt_chars=%d; transcript_chars=%d).",
+                len(srt_text),
+                len(plain_text),
+            )
 
         def _read_json_body(self) -> dict | None:
             """
@@ -192,8 +204,16 @@ def make_handler(cfg: dict, auth_token: str):
             if payload is None:
                 return
             transcript = payload.get("transcript", "")
-            summary = summarize_with_claude(claude_cmd, transcript)
+            log.info(
+                "Summary generation started (transcript_chars=%d).", len(transcript)
+            )
+            summary = summarize_with_claude(claude_cmd, transcript, claude_oauth_token)
             self._send_json(200, {"summary": summary})
+            log.info(
+                "Summary generation completed (success=%s; summary_chars=%d).",
+                summary != "_Summary generation failed._",
+                len(summary),
+            )
 
         def _handle_tags(self):
             """Generate tags for the transcript in the JSON request body and send them as a JSON response."""
@@ -201,8 +221,10 @@ def make_handler(cfg: dict, auth_token: str):
             if payload is None:
                 return
             transcript = payload.get("transcript", "")
-            tags = generate_tags_with_claude(claude_cmd, transcript)
+            log.info("Tag generation started (transcript_chars=%d).", len(transcript))
+            tags = generate_tags_with_claude(claude_cmd, transcript, claude_oauth_token)
             self._send_json(200, {"tags": tags})
+            log.info("Tag generation completed (tag_count=%d).", len(tags))
 
     return Handler
 
@@ -235,9 +257,17 @@ def main():
         sys.exit(1)
     auth_token = resolve_secret("BRIDGE_AUTH_TOKEN", auth_token_ref)
 
+    claude_cfg = cfg.get("claude") or {}
+    claude_oauth_ref = claude_cfg.get("oauth_token_op_ref")
+    claude_oauth_token = (
+        resolve_secret("CLAUDE_CODE_OAUTH_TOKEN", claude_oauth_ref)
+        if claude_oauth_ref
+        else None
+    )
+
     port = args.port or bridge_cfg.get("port", 8081)
 
-    handler_cls = make_handler(cfg, auth_token)
+    handler_cls = make_handler(cfg, auth_token, claude_oauth_token)
     httpd = HTTPServer((args.host, port), handler_cls)
     log.info(
         "Listening on %s:%d (transcribe/summarize/tags bridge for the containerized pipeline)",

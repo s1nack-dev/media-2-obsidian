@@ -1,0 +1,40 @@
+(version 1)
+(deny default)
+(import "system.sb")
+
+; Claude itself cannot launch tools in this mode, but process execution is
+; needed to start its bundled runtime. Filesystem and network policy still
+; applies to any child process.
+(allow process-exec)
+(allow process-fork)
+
+; Runtime, Claude installation, and OAuth state are the only non-system
+; filesystem locations available to the sandboxed process. This does not
+; include Keychain access - a login-keychain-backed `claude` session
+; cannot be read from inside this sandbox (confirmed empirically: neither
+; a Keychain file-read grant nor a securityd mach-lookup grant makes
+; `security find-generic-password` succeed here, since the Keychain ACL
+; check happens at a layer these grants don't reach). Set
+; `claude.oauth_token_op_ref` to authenticate via `CLAUDE_CODE_OAUTH_TOKEN`
+; instead.
+(allow file-read*
+    (subpath "/opt/homebrew")
+    (subpath "/usr/local")
+    (subpath "{executable_dir}")
+    (subpath "{temp_dir}")
+    (subpath "{home_local}")
+    (subpath "{home_claude}")
+    (literal "{home_claude_json}")
+)
+(allow file-write*
+    (subpath "{temp_dir}")
+)
+
+; No inbound sockets, plaintext HTTP, or arbitrary outbound ports. The Claude
+; API connection is the only network capability required by this job. Name
+; resolution still has to go through mDNSResponder's local socket, or
+; getaddrinfo() never returns and every request hangs until the CLI's own
+; retry logic gives up (observed as a multi-minute hang with no output).
+(deny network*)
+(allow network-outbound (remote tcp "*:443"))
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))

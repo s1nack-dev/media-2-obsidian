@@ -145,9 +145,13 @@ DECISIONS MADE, OPEN QUESTIONS/RISKS, ACTION ITEMS) and one that generates
 merged into the note's `tags:` frontmatter alongside the base
 `video-summary`/`{source_type}` tags.
 
-Both calls treat transcript text as untrusted: Claude Code runs in safe mode
-with built-in tools, MCP servers, skills, hooks/plugins, and session persistence
-disabled. The model can return text but cannot read files or invoke local tools.
+Both calls treat transcript text as untrusted. On the native Mac host, the
+pipeline wraps Claude Code in a fail-closed macOS Seatbelt sandbox: safe mode
+disables customizations and built-in tools, the sandbox blocks access to the
+checkout and the rest of your home directory, and networking is limited to
+outbound HTTPS. The CLI retains access only to its installation, its OAuth
+credentials/Keychain entry, and temporary storage so it can authenticate and
+return text.
 
 Install and log in once, interactively:
 
@@ -161,8 +165,31 @@ stores credentials locally; after this, `claude -p "..."` runs headlessly
 from cron using your subscription — no API key or extra billing needed.
 
 (If you'd rather use the Anthropic API and pay per token instead, that's a
-small code change in `summarize_with_claude()` in `core.py` — let me know
-and I can swap it in.)
+small code change in `summarize_with_claude()` in `claude_client.py` — let me
+know and I can swap it in.)
+
+### Background host-bridge authentication
+
+`host_bridge.py` runs on the Mac, but a detached/background process may not be
+able to access the interactive terminal's Keychain-backed Claude login. In that
+case, generate a long-lived **subscription OAuth token** in a native Mac
+terminal:
+
+```bash
+claude setup-token
+```
+
+Store the printed token in 1Password, then set its reference in `config.yaml`:
+
+```yaml
+claude:
+  oauth_token_op_ref: "op://Private/claude-code-host-bridge/oauth_token"
+```
+
+The bridge resolves it only on the Mac and passes it only to its local Claude
+CLI subprocess. Do not put it in Docker Compose, `.env`, or a committed file.
+This token is used only for inference and does not move Claude Code into the
+container.
 
 ## 6. Install dependencies and configure
 
@@ -361,6 +388,12 @@ processes.
      -H "Authorization: Bearer <the webhook token from step 1>" \
      -d '{"input": "https://www.youtube.com/watch?v=..."}'
    ```
+
+   On the first playlist poll, Docker creates
+   `.pipeline-runtime/state.json` beside the project. It is a persistent,
+   git-ignored host file shared by the fetch container; you can inspect or
+   edit it in place between runs. Native mode continues to use the
+   `state_file` path in `config.yaml` (normally `state.json`).
 
 `server.py`'s request-handling behavior (queued, `202 Accepted`
 immediately, actual work happens async, `notify()` alerts you when a job

@@ -37,7 +37,14 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from core import load_config, notify, pipeline_lock, resolve_secret, validate_public_url
+from core import (
+    load_config,
+    notify,
+    pipeline_lock,
+    resolve_lock_path,
+    resolve_secret,
+    validate_public_url,
+)
 from pipeline import NoTranscriptAvailableError, detect_input_type, process_input
 
 logging.basicConfig(
@@ -61,7 +68,7 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
         github_token (str): Token used for GitHub operations.
         bridge_token (str): Token used for bridge operations.
     """
-    lock_path = cfg.get("lock_file", "pipeline.lock")
+    lock_path = resolve_lock_path(cfg)
     while True:
         raw_input = _job_queue.get()
         try:

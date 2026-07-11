@@ -1,4 +1,5 @@
 import importlib
+import logging
 import sys
 import types
 from io import BytesIO
@@ -13,7 +14,7 @@ if "transcribe_backend" not in sys.modules:
 host_bridge = importlib.import_module("host_bridge")
 
 
-def _handler(path, body=b"", auth="Bearer token"):
+def _handler(path, body=b"", auth="Bearer token", claude_oauth_token=None):
     """
     Create a simulated HTTP handler configured for testing.
 
@@ -25,7 +26,9 @@ def _handler(path, body=b"", auth="Bearer token"):
     Returns:
         A handler instance with simulated request and response streams.
     """
-    H = host_bridge.make_handler({"claude": {"command": "claude"}}, "token")
+    H = host_bridge.make_handler(
+        {"claude": {"command": "claude"}}, "token", claude_oauth_token
+    )
 
     class F:
         def send_response(self, s):
@@ -72,15 +75,45 @@ def test_bridge_json_validation():
 
 def test_bridge_summary_and_tags(monkeypatch):
     monkeypatch.setattr(
-        host_bridge, "summarize_with_claude", lambda cmd, text: "summary"
+        host_bridge, "summarize_with_claude", lambda cmd, text, token=None: "summary"
     )
     monkeypatch.setattr(
-        host_bridge, "generate_tags_with_claude", lambda cmd, text: ["tag"]
+        host_bridge,
+        "generate_tags_with_claude",
+        lambda cmd, text, token=None: ["tag"],
     )
     for path, expected in [("/summarize", 200), ("/tags", 200)]:
         h = _handler(path, b'{"transcript":"hello"}')
         h.do_POST()
         assert h.status == expected
+
+
+def test_bridge_passes_configured_claude_oauth_token(monkeypatch):
+    received_tokens = []
+    monkeypatch.setattr(
+        host_bridge,
+        "summarize_with_claude",
+        lambda cmd, text, token: received_tokens.append(token) or "summary",
+    )
+    h = _handler(
+        "/summarize", b'{"transcript":"hello"}', claude_oauth_token="test-token"
+    )
+    h.do_POST()
+    assert h.status == 200
+    assert received_tokens == ["test-token"]
+
+
+def test_bridge_logs_summary_progress(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="host_bridge")
+    monkeypatch.setattr(
+        host_bridge, "summarize_with_claude", lambda cmd, text, token=None: "summary"
+    )
+    h = _handler("/summarize", b'{"transcript":"hello"}')
+    h.do_POST()
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Received /summarize request" in message for message in messages)
+    assert any("Summary generation started" in message for message in messages)
+    assert any("Summary generation completed" in message for message in messages)
 
 
 def test_bridge_transcribe_validation_and_success(monkeypatch):

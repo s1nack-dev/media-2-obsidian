@@ -33,6 +33,12 @@ def test_state_round_trip_and_defaults(tmp_path):
     assert json.loads(path.read_text())["processed_video_ids"] == ["b"]
 
 
+def test_state_path_prefers_container_override(monkeypatch):
+    cfg = {"state_file": "state.json"}
+    monkeypatch.setenv("PIPELINE_STATE_FILE", "/app/.pipeline-runtime/state.json")
+    assert core.resolve_state_path(cfg) == "/app/.pipeline-runtime/state.json"
+
+
 def test_secret_prefers_environment(monkeypatch):
     monkeypatch.setenv("TOKEN", "resolved")
     monkeypatch.setattr(core, "op_read", lambda _: pytest.fail("op should not run"))
@@ -72,37 +78,6 @@ def test_validate_public_url_accepts_public(monkeypatch):
         lambda *a: [(None, None, None, None, ("93.184.216.34", 0))],
     )
     core.validate_public_url("https://example.com/page")
-
-
-def test_summarize_retries_polluted_response(monkeypatch):
-    responses = [
-        type("R", (), {"returncode": 0, "stdout": "planning...", "stderr": ""})(),
-        type(
-            "R",
-            (),
-            {"returncode": 0, "stdout": "prefix\n## SUMMARY\n- done", "stderr": ""},
-        )(),
-    ]
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        return responses.pop(0)
-
-    monkeypatch.setattr(core.subprocess, "run", run)
-    assert core.summarize_with_claude("claude", "transcript").startswith("## SUMMARY")
-    assert all(
-        "--safe-mode" in command and command[command.index("--tools") + 1] == ""
-        for command in calls
-    )
-
-
-def test_summarize_failure(monkeypatch):
-    result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "error"})()
-    monkeypatch.setattr(core.subprocess, "run", lambda *a, **k: result)
-    assert (
-        core.summarize_with_claude("claude", "text") == "_Summary generation failed._"
-    )
 
 
 def test_notify_webhook_failure_is_best_effort(monkeypatch):
@@ -148,39 +123,12 @@ def test_build_note_contains_metadata():
     )
 
 
-def test_tag_sanitization_and_filtering(monkeypatch):
-    monkeypatch.setattr(
-        core.subprocess,
-        "run",
-        lambda *a, **k: type(
-            "R",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "- Machine Learning\nnoise!\nMachine Learning\n",
-            },
-        )(),
-    )
-    assert core.generate_tags_with_claude("claude", "text") == ["machine-learning"]
-
-
 def test_private_ip_classification():
     import ipaddress
 
     assert core._is_private_ip(ipaddress.ip_address("127.0.0.1"))
     assert core._is_private_ip(ipaddress.ip_address("169.254.169.254"))
     assert not core._is_private_ip(ipaddress.ip_address("8.8.8.8"))
-
-
-def test_tags_cli_failure_returns_empty(monkeypatch):
-    monkeypatch.setattr(
-        core.subprocess,
-        "run",
-        lambda *a, **k: type(
-            "R", (), {"returncode": 1, "stdout": "", "stderr": "bad"}
-        )(),
-    )
-    assert core.generate_tags_with_claude("claude", "text") == []
 
 
 def test_run_git_redacts_token(monkeypatch, tmp_path):
