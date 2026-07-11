@@ -3,6 +3,7 @@ Shared helpers used by both pipeline.py (single-input processor) and
 fetch_playlist.py (YouTube playlist polling + retry loop): config/state
 I/O, notifications, git helpers, summarization, and Obsidian note building.
 """
+
 import contextlib
 import fcntl
 import ipaddress
@@ -25,18 +26,21 @@ log = logging.getLogger("pipeline")
 
 # Shared timeout for yt-dlp operations (subtitle download, audio download, etc.)
 YTDLP_TIMEOUT_SECONDS = 1800
+MAX_MEDIA_BYTES = 500 * 1024 * 1024
 
 
 def op_read(ref: str) -> str:
     """Read a secret from 1Password using its reference.
-    
+
     Parameters:
         ref (str): The 1Password secret reference.
-    
+
     Returns:
         str: The secret value without surrounding whitespace.
     """
-    result = subprocess.run(["op", "read", ref], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        ["op", "read", ref], capture_output=True, text=True, check=True
+    )
     return result.stdout.strip()
 
 
@@ -59,10 +63,11 @@ def resolve_secret(env_var: str, op_ref: str) -> str:
 # Notifications
 # --------------------------------------------------------------------------
 
+
 def notify(cfg: dict, subject: str, message: str) -> None:
     """
     Send an alert through the configured webhook and/or email notification channels.
-    
+
     Parameters:
         cfg (dict): Configuration containing notification settings.
         subject (str): Notification subject.
@@ -73,12 +78,17 @@ def notify(cfg: dict, subject: str, message: str) -> None:
     webhook_url = notif_cfg.get("webhook_url")
     if webhook_url:
         try:
+            if urlparse(webhook_url).scheme not in ("http", "https"):
+                raise ValueError("Webhook URL scheme must be http or https")
             body = json.dumps({"text": f"*{subject}*\n{message}"}).encode()
             req = urllib.request.Request(
-                webhook_url, data=body,
+                webhook_url,
+                data=body,
                 headers={"Content-Type": "application/json"},
             )
-            urllib.request.urlopen(req, timeout=15)
+            urllib.request.urlopen(  # nosec B310 - scheme validated above
+                req, timeout=15
+            )
         except Exception as e:
             log.error("Webhook notification failed: %s", e)
 
@@ -90,11 +100,15 @@ def notify(cfg: dict, subject: str, message: str) -> None:
             msg["Subject"] = subject
             msg["From"] = email_cfg["from_addr"]
             msg["To"] = email_cfg["to_addr"]
-            with smtplib.SMTP(email_cfg["smtp_host"], email_cfg["smtp_port"], timeout=20) as server:
+            with smtplib.SMTP(
+                email_cfg["smtp_host"], email_cfg["smtp_port"], timeout=20
+            ) as server:
                 server.starttls()
                 if email_cfg.get("smtp_user"):
                     server.login(email_cfg["smtp_user"], password)
-                server.sendmail(email_cfg["from_addr"], [email_cfg["to_addr"]], msg.as_string())
+                server.sendmail(
+                    email_cfg["from_addr"], [email_cfg["to_addr"]], msg.as_string()
+                )
         except Exception as e:
             log.error("Email notification failed: %s", e)
 
@@ -103,14 +117,15 @@ def notify(cfg: dict, subject: str, message: str) -> None:
 # Config / state
 # --------------------------------------------------------------------------
 
+
 def load_config(path: str) -> dict:
     """Load configuration data from a YAML file.
-    
+
     Parameters:
-    	path (str): Path to the YAML configuration file.
-    
+        path (str): Path to the YAML configuration file.
+
     Returns:
-    	dict: Parsed configuration data.
+        dict: Parsed configuration data.
     """
     with open(path) as f:
         return yaml.safe_load(f)
@@ -119,12 +134,12 @@ def load_config(path: str) -> dict:
 def load_state(path: str) -> dict:
     """
     Load persisted pipeline state from a JSON file.
-    
+
     Parameters:
-    	path (str): Path to the state file.
-    
+        path (str): Path to the state file.
+
     Returns:
-    	dict: The loaded state, including an empty `failed_attempts` mapping when absent, or default initial state when the file does not exist.
+        dict: The loaded state, including an empty `failed_attempts` mapping when absent, or default initial state when the file does not exist.
     """
     p = Path(path)
     if p.exists():
@@ -137,7 +152,7 @@ def load_state(path: str) -> dict:
 def save_state(path: str, state: dict) -> None:
     """
     Save pipeline state as indented JSON at the specified path.
-    
+
     Parameters:
         path (str): Destination file path.
         state (dict): State data to serialize.
@@ -149,7 +164,7 @@ def save_state(path: str, state: dict) -> None:
 def pipeline_lock(lock_path: str):
     """
     Serialize access to shared state and repositories using a file-based inter-process lock.
-    
+
     Parameters:
         lock_path (str): Path to the lock file.
     """
@@ -167,16 +182,23 @@ def pipeline_lock(lock_path: str):
 # SSRF protection
 # --------------------------------------------------------------------------
 
+
 def _is_private_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Determine whether an IP address belongs to a private or reserved address range.
-    
+
     Parameters:
-    	ip (IPv4Address | IPv6Address): The IP address to classify.
-    
+        ip (IPv4Address | IPv6Address): The IP address to classify.
+
     Returns:
-    	bool: `true` if the address is private, loopback, link-local, multicast, reserved, or a recognized cloud metadata address, `false` otherwise.
+        bool: `true` if the address is private, loopback, link-local, multicast, reserved, or a recognized cloud metadata address, `false` otherwise.
     """
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+    ):
         return True
     # Cloud metadata endpoints
     if isinstance(ip, ipaddress.IPv4Address):
@@ -208,7 +230,9 @@ def validate_public_url(url: str) -> None:
 
     # Resolve hostname to IPs and check each one
     try:
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        addr_info = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
     except socket.gaierror as e:
         raise ValueError(f"Could not resolve hostname {hostname!r}: {e}") from e
 
@@ -252,7 +276,9 @@ def resolve_and_validate_url(url: str) -> tuple[str, str]:
 
     # Resolve hostname to IPs immediately before connection
     try:
-        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        addr_info = socket.getaddrinfo(
+            hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+        )
     except socket.gaierror as e:
         raise ValueError(f"Could not resolve hostname {hostname!r}: {e}") from e
 
@@ -264,7 +290,9 @@ def resolve_and_validate_url(url: str) -> tuple[str, str]:
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError as e:
-        raise ValueError(f"Invalid IP address {ip_str!r} for hostname {hostname!r}") from e
+        raise ValueError(
+            f"Invalid IP address {ip_str!r} for hostname {hostname!r}"
+        ) from e
 
     if _is_private_ip(ip):
         raise ValueError(
@@ -279,14 +307,15 @@ def resolve_and_validate_url(url: str) -> tuple[str, str]:
 # Transcript text helpers
 # --------------------------------------------------------------------------
 
+
 def srt_to_plain_text(srt_path: Path) -> str:
     """Convert an SRT subtitle file into deduplicated plain text.
-    
+
     Parameters:
-    	srt_path (Path): Path to the SRT subtitle file.
-    
+        srt_path (Path): Path to the SRT subtitle file.
+
     Returns:
-    	str: Subtitle text with indices, timestamps, blank lines, and consecutive duplicate lines removed.
+        str: Subtitle text with indices, timestamps, blank lines, and consecutive duplicate lines removed.
     """
     lines = srt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     text_lines = []
@@ -376,8 +405,10 @@ _SUMMARIZE_ATTEMPTS = 2
 _CLAUDE_UNTRUSTED_INPUT_ARGS = [
     "--safe-mode",
     "--strict-mcp-config",
-    "--mcp-config", "{}",
-    "--tools", "",
+    "--mcp-config",
+    "{}",
+    "--tools",
+    "",
     "--disable-slash-commands",
     "--no-session-persistence",
 ]
@@ -386,11 +417,11 @@ _CLAUDE_UNTRUSTED_INPUT_ARGS = [
 def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
     """
     Generate a transcript summary using the Claude CLI.
-    
+
     Parameters:
         claude_cmd (str): Command used to invoke the Claude CLI.
         transcript_text (str): Transcript text to summarize.
-    
+
     Returns:
         str: The generated summary beginning with the expected summary heading, or a failure message if generation fails.
     """
@@ -407,10 +438,18 @@ def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
     for attempt in range(1, _SUMMARIZE_ATTEMPTS + 1):
         result = subprocess.run(
             [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
-            capture_output=True, text=True, timeout=600, env=clean_env,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=clean_env,
         )
         if result.returncode != 0:
-            log.error("Claude CLI failed (attempt %d/%d): %s", attempt, _SUMMARIZE_ATTEMPTS, result.stderr[-1000:])
+            log.error(
+                "Claude CLI failed (attempt %d/%d): %s",
+                attempt,
+                _SUMMARIZE_ATTEMPTS,
+                result.stderr[-1000:],
+            )
             continue
 
         output = result.stdout.strip()
@@ -426,7 +465,10 @@ def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
             log.warning(
                 "Claude CLI response missing the expected '%s' heading (attempt %d/%d) - "
                 "likely polluted by an ambient hook/plugin. Response started with: %r",
-                _SUMMARY_MARKER, attempt, _SUMMARIZE_ATTEMPTS, output[:200],
+                _SUMMARY_MARKER,
+                attempt,
+                _SUMMARIZE_ATTEMPTS,
+                output[:200],
             )
             continue
         return output[idx:]
@@ -451,10 +493,10 @@ _MAX_TAG_LENGTH = 40
 def _sanitize_tag(raw: str) -> str:
     """
     Convert raw text into a normalized tag.
-        
+
     Parameters:
         raw (str): The text to normalize.
-    
+
     Returns:
         str: A lowercase tag with whitespace replaced by hyphens and unsupported characters removed.
     """
@@ -466,11 +508,11 @@ def _sanitize_tag(raw: str) -> str:
 def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str]:
     """
     Generate content tags from a transcript using Claude.
-    
+
     Parameters:
         claude_cmd (str): Command used to invoke the Claude CLI.
         transcript_text (str): Transcript from which to extract tags.
-    
+
     Returns:
         list[str]: Ordered, unique, sanitized tags generated from the transcript, or an empty list if generation fails.
     """
@@ -485,7 +527,10 @@ def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str
 
     result = subprocess.run(
         [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
-        capture_output=True, text=True, timeout=600, env=clean_env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env=clean_env,
     )
     if result.returncode != 0:
         log.error("Claude CLI failed to generate tags: %s", result.stderr[-1000:])
@@ -510,6 +555,7 @@ def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str
 # Git helpers
 # --------------------------------------------------------------------------
 
+
 def _sanitize_git_output(text: str) -> str:
     """Redacts x-access-token:<token>@ patterns from git command output."""
     return re.sub(r"x-access-token:[^@]+@", "x-access-token:REDACTED@", text)
@@ -523,19 +569,29 @@ def run_git(args: list[str], cwd: Path) -> None:
     Run a Git command in the specified directory.
 
     Parameters:
-    	args (list[str]): Arguments to pass to Git.
-    	cwd (Path): Directory in which to run the command.
+        args (list[str]): Arguments to pass to Git.
+        cwd (Path): Directory in which to run the command.
 
     Raises:
-    	RuntimeError: If Git exits with a nonzero status or times out.
+        RuntimeError: If Git exits with a nonzero status or times out.
     """
     try:
-        result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=GIT_TIMEOUT_SECONDS)
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
     except subprocess.TimeoutExpired as e:
         # Sanitize command and any available output before raising
         sanitized_args = [_sanitize_git_output(arg) for arg in args]
-        sanitized_stdout = _sanitize_git_output(e.stdout.decode("utf-8", errors="replace") if e.stdout else "")
-        sanitized_stderr = _sanitize_git_output(e.stderr.decode("utf-8", errors="replace") if e.stderr else "")
+        sanitized_stdout = _sanitize_git_output(
+            e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
+        )
+        sanitized_stderr = _sanitize_git_output(
+            e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+        )
         raise RuntimeError(
             f"git {' '.join(sanitized_args)} timed out after {GIT_TIMEOUT_SECONDS} seconds. "
             f"stdout: {sanitized_stdout[:500]}, stderr: {sanitized_stderr[:500]}"
@@ -551,15 +607,15 @@ def run_git(args: list[str], cwd: Path) -> None:
 def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path:
     """
     Ensure that a local repository is cloned or synchronized with the specified branch.
-    
+
     Parameters:
-    	repo_url (str): Repository URL.
-    	local_path (str): Local directory for the repository.
-    	branch (str): Branch to clone or synchronize.
-    	token (str): Authentication token for the repository URL.
-    
+        repo_url (str): Repository URL.
+        local_path (str): Local directory for the repository.
+        branch (str): Branch to clone or synchronize.
+        token (str): Authentication token for the repository URL.
+
     Returns:
-    	Path: Path to the local repository.
+        Path: Path to the local repository.
     """
     path = Path(local_path)
     authed_url = repo_url.replace("https://", f"https://x-access-token:{token}@")
@@ -584,23 +640,27 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
     return path
 
 
-def commit_and_push(repo_path: Path, files: list[Path], message: str, name: str, email: str) -> None:
+def commit_and_push(
+    repo_path: Path, files: list[Path], message: str, name: str, email: str
+) -> None:
     """
     Commit staged changes in a repository and push them to its origin.
-    
+
     Parameters:
-    	repo_path (Path): Local Git repository path.
-    	files (list[Path]): Files to stage for the commit.
-    	message (str): Commit message.
-    	name (str): Git author name.
-    	email (str): Git author email.
+        repo_path (Path): Local Git repository path.
+        files (list[Path]): Files to stage for the commit.
+        message (str): Commit message.
+        name (str): Git author name.
+        email (str): Git author email.
     """
     run_git(["config", "user.name", name], cwd=repo_path)
     run_git(["config", "user.email", email], cwd=repo_path)
     rel_files = [str(f.relative_to(repo_path)) for f in files]
     run_git(["add", "-f"] + rel_files, cwd=repo_path)
     run_git(["add", "-u"], cwd=repo_path)
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True)
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True
+    )
     if not status.stdout.strip():
         log.info("Nothing to commit in %s", repo_path)
         return
@@ -612,13 +672,14 @@ def commit_and_push(repo_path: Path, files: list[Path], message: str, name: str,
 # Obsidian note
 # --------------------------------------------------------------------------
 
+
 def slugify(title: str) -> str:
     """
     Create a lowercase URL-friendly slug from a title.
-    
+
     Parameters:
         title (str): Title to normalize.
-    
+
     Returns:
         str: A slug limited to 80 characters, or "untitled" when the title contains no usable characters.
     """
@@ -627,9 +688,16 @@ def slugify(title: str) -> str:
     return slug[:80] or "untitled"
 
 
-def build_note(title: str, source_type: str, source_url: str | None, video_id: str | None,
-                published_at: str | None, subtitle_github_url: str, summary: str,
-                content_tags: list[str] | None = None) -> str:
+def build_note(
+    title: str,
+    source_type: str,
+    source_url: str | None,
+    video_id: str | None,
+    published_at: str | None,
+    subtitle_github_url: str,
+    summary: str,
+    content_tags: list[str] | None = None,
+) -> str:
     """
     Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
 

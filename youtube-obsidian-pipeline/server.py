@@ -26,6 +26,7 @@ Only http(s) URLs are accepted from the network - unlike pipeline.py's
 CLI, this endpoint refuses local file paths, since a network caller has
 no business asking this Mac to read/transcribe an arbitrary local file.
 """
+
 import argparse
 import json
 import logging
@@ -54,7 +55,7 @@ MAX_BODY_BYTES = 10_000
 def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
     """
     Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
-    
+
     Parameters:
         cfg (dict): Pipeline and notification configuration.
         github_token (str): Token used for GitHub operations.
@@ -66,15 +67,22 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
         try:
             log.info("Processing queued job: %s", raw_input)
             with pipeline_lock(lock_path):
-                result = process_input(raw_input, cfg, github_token=github_token, bridge_token=bridge_token)
+                result = process_input(
+                    raw_input, cfg, github_token=github_token, bridge_token=bridge_token
+                )
             log.info("Done: %s -> %s", result["title"], result["note_path"])
             notify(
-                cfg, "Pipeline: processed via webhook",
+                cfg,
+                "Pipeline: processed via webhook",
                 f'"{result["title"]}" ({raw_input}) done -> {result["note_path"]}',
             )
         except NoTranscriptAvailableError as e:
             log.error("No transcript available for %s: %s", raw_input, e)
-            notify(cfg, "Pipeline: no transcript available (webhook)", f"{raw_input}\n\n{e}")
+            notify(
+                cfg,
+                "Pipeline: no transcript available (webhook)",
+                f"{raw_input}\n\n{e}",
+            )
         except Exception:
             err = traceback.format_exc()
             log.error("Failed processing %s:\n%s", raw_input, err)
@@ -85,15 +93,16 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
 
 def make_handler(auth_token: str):
     """Create an authenticated HTTP request handler for the processing endpoints.
-    
+
     Parameters:
         auth_token (str): Token required in the ``Authorization`` header for
             processing requests.
-    
+
     Returns:
         type: A ``BaseHTTPRequestHandler`` subclass that serves health checks and
             validates and queues processing requests.
     """
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             log.info("%s - %s", self.address_string(), fmt % args)
@@ -108,7 +117,9 @@ def make_handler(auth_token: str):
 
         def do_GET(self):
             if self.path == "/healthz":
-                self._send_json(200, {"status": "ok", "queue_depth": _job_queue.qsize()})
+                self._send_json(
+                    200, {"status": "ok", "queue_depth": _job_queue.qsize()}
+                )
             else:
                 self._send_json(404, {"error": "not found"})
 
@@ -146,7 +157,9 @@ def make_handler(auth_token: str):
                 return
 
             if input_type == "local_file":
-                self._send_json(400, {"error": "local file paths are not accepted over the network"})
+                self._send_json(
+                    400, {"error": "local file paths are not accepted over the network"}
+                )
                 return
 
             # SSRF protection: validate URL before enqueueing
@@ -165,7 +178,9 @@ def make_handler(auth_token: str):
 
             depth = _job_queue.qsize()
             log.info("Queued %s (%s), queue depth now %d", raw_input, input_type, depth)
-            self._send_json(202, {"status": "queued", "input": raw_input, "queue_depth": depth})
+            self._send_json(
+                202, {"status": "queued", "input": raw_input, "queue_depth": depth}
+            )
 
     return Handler
 
@@ -173,14 +188,23 @@ def make_handler(auth_token: str):
 def main():
     """
     Start the authenticated webhook server and its background pipeline worker.
-    
+
     Command-line options control the configuration file, bind address, and port. The server runs until interrupted.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address. 127.0.0.1 is reachable from "
-                         "Docker Desktop containers via host.docker.internal without exposing it on the LAN.")
-    parser.add_argument("--port", type=int, default=None, help="Overrides webhook.port from config.yaml.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address. 127.0.0.1 is reachable from "
+        "Docker Desktop containers via host.docker.internal without exposing it on the LAN.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Overrides webhook.port from config.yaml.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -188,21 +212,30 @@ def main():
 
     auth_token_ref = webhook_cfg.get("auth_token_op_ref")
     if not auth_token_ref:
-        log.error("config.yaml is missing webhook.auth_token_op_ref - refusing to start unauthenticated.")
+        log.error(
+            "config.yaml is missing webhook.auth_token_op_ref - refusing to start unauthenticated."
+        )
         sys.exit(1)
     auth_token = resolve_secret("WEBHOOK_AUTH_TOKEN", auth_token_ref)
     github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-    bridge_token = resolve_secret("BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"])
+    bridge_token = resolve_secret(
+        "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
+    )
 
     port = args.port or webhook_cfg.get("port", 8080)
 
-    worker = threading.Thread(target=_worker, args=(cfg, github_token, bridge_token), daemon=True)
+    worker = threading.Thread(
+        target=_worker, args=(cfg, github_token, bridge_token), daemon=True
+    )
     worker.start()
 
     handler_cls = make_handler(auth_token)
     httpd = HTTPServer((args.host, port), handler_cls)
-    log.info("Listening on %s:%d (single-threaded HTTP; one job processed at a time by the worker thread)",
-              args.host, port)
+    log.info(
+        "Listening on %s:%d (single-threaded HTTP; one job processed at a time by the worker thread)",
+        args.host,
+        port,
+    )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

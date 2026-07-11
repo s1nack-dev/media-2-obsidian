@@ -18,6 +18,7 @@ it as part of its own single-item processing. Single-threaded HTTP
 handling on purpose: the Parakeet model and the claude CLI shouldn't be
 hit concurrently from a shared process.
 """
+
 import argparse
 import json
 import logging
@@ -27,7 +28,13 @@ import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from core import generate_tags_with_claude, load_config, resolve_secret, summarize_with_claude
+from core import (
+    MAX_MEDIA_BYTES,
+    generate_tags_with_claude,
+    load_config,
+    resolve_secret,
+    summarize_with_claude,
+)
 from transcribe_backend import transcribe_audio
 
 logging.basicConfig(
@@ -36,24 +43,29 @@ logging.basicConfig(
 )
 log = logging.getLogger("host_bridge")
 
-MAX_AUDIO_BYTES = 500 * 1024 * 1024  # 500MB - generous headroom for long podcast episodes
+MAX_AUDIO_BYTES = MAX_MEDIA_BYTES
 MAX_JSON_BYTES = 1_000_000  # transcripts are text, 1MB is already very generous
+REQUEST_TIMEOUT_SECONDS = 1800  # Matches the longest bridge client request timeout
 
 
 def make_handler(cfg: dict, auth_token: str):
     """
     Create an HTTP request handler for the host bridge service.
-    
+
     Parameters:
-    	cfg (dict): Configuration containing the Claude command.
-    	auth_token (str): Bearer token required for POST requests.
-    
+        cfg (dict): Configuration containing the Claude command.
+        auth_token (str): Bearer token required for POST requests.
+
     Returns:
-    	type: A configured HTTP request handler class.
+        type: A configured HTTP request handler class.
     """
     claude_cmd = cfg["claude"]["command"]
 
     class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            self.request.settimeout(REQUEST_TIMEOUT_SECONDS)
+            super().setup()
+
         def log_message(self, fmt, *args):
             """Log an HTTP request message with the client's address."""
             log.info("%s - %s", self.address_string(), fmt % args)
@@ -61,7 +73,7 @@ def make_handler(cfg: dict, auth_token: str):
         def _send_json(self, status: int, payload: dict) -> None:
             """
             Send a JSON response with the specified HTTP status and payload.
-            
+
             Parameters:
                 status (int): HTTP status code for the response.
                 payload (dict): JSON-serializable response body.
@@ -76,7 +88,7 @@ def make_handler(cfg: dict, auth_token: str):
         def _check_auth(self) -> bool:
             """
             Validate the request's bearer token and send an unauthorized response when authentication fails.
-            
+
             Returns:
                 bool: `True` if the request has the expected bearer token, `False` otherwise.
             """
@@ -110,14 +122,15 @@ def make_handler(cfg: dict, auth_token: str):
         def _handle_transcribe(self):
             """
             Transcribe an uploaded audio file using the requested model.
-            
+
             Parameters:
-            	model_id (str): Identifier of the transcription model provided in the request query.
-            
+                model_id (str): Identifier of the transcription model provided in the request query.
+
             Returns:
-            	JSON response containing the SRT-formatted and plain-text transcripts, or an error response for invalid input or transcription failure.
+                JSON response containing the SRT-formatted and plain-text transcripts, or an error response for invalid input or transcription failure.
             """
             from urllib.parse import parse_qs, urlparse
+
             query = parse_qs(urlparse(self.path).query)
             model_id = (query.get("model_id") or [None])[0]
             if not model_id:
@@ -152,7 +165,7 @@ def make_handler(cfg: dict, auth_token: str):
         def _read_json_body(self) -> dict | None:
             """
             Read and parse the request body as JSON.
-            
+
             Returns:
                 dict | None: The decoded JSON object, or `None` when the body is missing, oversized, or invalid.
             """
@@ -168,10 +181,10 @@ def make_handler(cfg: dict, auth_token: str):
 
         def _handle_summarize(self):
             """Generate a summary from the transcript in the JSON request body.
-            
+
             Parameters:
                 transcript: The transcript text to summarize.
-            
+
             Returns:
                 A JSON response containing the generated summary.
             """
@@ -200,9 +213,15 @@ def main():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address. 127.0.0.1 is reachable from "
-                         "Docker Desktop containers via host.docker.internal without exposing it on the LAN.")
-    parser.add_argument("--port", type=int, default=None, help="Overrides bridge.port from config.yaml.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address. 127.0.0.1 is reachable from "
+        "Docker Desktop containers via host.docker.internal without exposing it on the LAN.",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="Overrides bridge.port from config.yaml."
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -210,7 +229,9 @@ def main():
 
     auth_token_ref = bridge_cfg.get("auth_token_op_ref")
     if not auth_token_ref:
-        log.error("config.yaml is missing bridge.auth_token_op_ref - refusing to start unauthenticated.")
+        log.error(
+            "config.yaml is missing bridge.auth_token_op_ref - refusing to start unauthenticated."
+        )
         sys.exit(1)
     auth_token = resolve_secret("BRIDGE_AUTH_TOKEN", auth_token_ref)
 
@@ -218,8 +239,11 @@ def main():
 
     handler_cls = make_handler(cfg, auth_token)
     httpd = HTTPServer((args.host, port), handler_cls)
-    log.info("Listening on %s:%d (transcribe/summarize/tags bridge for the containerized pipeline)",
-             args.host, port)
+    log.info(
+        "Listening on %s:%d (transcribe/summarize/tags bridge for the containerized pipeline)",
+        args.host,
+        port,
+    )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

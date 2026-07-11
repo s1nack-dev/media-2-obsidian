@@ -11,6 +11,7 @@ If you're running this ON a headless server (no browser), instead run this
 script on your own laptop (same client_secret.json), let it open the browser
 there, then copy the resulting token.json over to the server.
 """
+
 import argparse
 import subprocess
 import yaml
@@ -22,10 +23,10 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.readonly"]
 def main():
     """
     Authorize access to YouTube and save the resulting credentials for reuse.
-    
+
     Parameters:
         --config: Path to the YAML configuration file.
-    
+
     The authorization flow opens a browser and requires a local redirect listener. The configuration must provide the token file path and 1Password references for the OAuth client credentials.
     """
     parser = argparse.ArgumentParser()
@@ -40,14 +41,16 @@ def main():
     def op_read(ref):
         """
         Read a secret value from 1Password using its reference.
-        
+
         Parameters:
             ref (str): The 1Password reference to read.
-        
+
         Returns:
             str: The trimmed secret value.
         """
-        return subprocess.run(["op", "read", ref], capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(
+            ["op", "read", ref], capture_output=True, text=True, check=True
+        ).stdout.strip()
 
     client_config = {
         "installed": {

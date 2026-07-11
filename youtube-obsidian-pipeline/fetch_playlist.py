@@ -14,6 +14,7 @@ with --loop (no external scheduler reaches into a container). Each pass:
 
 See README.md for full setup instructions.
 """
+
 import argparse
 import logging
 import subprocess
@@ -26,7 +27,14 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from core import load_config, load_state, notify, pipeline_lock, resolve_secret, save_state
+from core import (
+    load_config,
+    load_state,
+    notify,
+    pipeline_lock,
+    resolve_secret,
+    save_state,
+)
 from pipeline import NoTranscriptAvailableError, process_input
 
 logging.basicConfig(
@@ -43,16 +51,17 @@ DEFAULT_MAX_RETRIES = 3
 # YouTube
 # --------------------------------------------------------------------------
 
+
 def get_youtube_service(cfg: dict):
     """
     Create an authenticated YouTube Data API service from the configured OAuth token.
-    
+
     Parameters:
         cfg (dict): Configuration containing the YouTube OAuth token file path.
-    
+
     Returns:
         Resource: An authenticated YouTube Data API service.
-    
+
     Raises:
         SystemExit: If the configured OAuth token file does not exist.
     """
@@ -60,7 +69,8 @@ def get_youtube_service(cfg: dict):
     if not Path(token_file).exists():
         log.error(
             "No %s found. Run `python youtube_auth.py --config config.yaml` "
-            "once first (see README.md).", token_file
+            "once first (see README.md).",
+            token_file,
         )
         sys.exit(1)
 
@@ -75,28 +85,34 @@ def get_youtube_service(cfg: dict):
 def get_playlist_items(service, playlist_id: str) -> list[dict]:
     """
     Retrieve all videos in a YouTube playlist in oldest-first order.
-    
+
     Parameters:
-    	playlist_id (str): The ID of the playlist to retrieve.
-    
+        playlist_id (str): The ID of the playlist to retrieve.
+
     Returns:
-    	list[dict]: Playlist items containing `video_id`, `title`, and `published_at`.
+        list[dict]: Playlist items containing `video_id`, `title`, and `published_at`.
     """
     items = []
     page_token = None
     while True:
-        resp = service.playlistItems().list(
-            part="snippet,contentDetails",
-            playlistId=playlist_id,
-            maxResults=50,
-            pageToken=page_token,
-        ).execute()
+        resp = (
+            service.playlistItems()
+            .list(
+                part="snippet,contentDetails",
+                playlistId=playlist_id,
+                maxResults=50,
+                pageToken=page_token,
+            )
+            .execute()
+        )
         for it in resp.get("items", []):
-            items.append({
-                "video_id": it["contentDetails"]["videoId"],
-                "title": it["snippet"]["title"],
-                "published_at": it["snippet"].get("publishedAt", ""),
-            })
+            items.append(
+                {
+                    "video_id": it["contentDetails"]["videoId"],
+                    "title": it["snippet"]["title"],
+                    "published_at": it["snippet"].get("publishedAt", ""),
+                }
+            )
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
@@ -107,10 +123,11 @@ def get_playlist_items(service, playlist_id: str) -> list[dict]:
 # Main
 # --------------------------------------------------------------------------
 
+
 def run_once(cfg: dict) -> None:
     """
     Process each unprocessed playlist video and persist its outcome.
-    
+
     Parameters:
         cfg (dict): Application configuration, including playlist, state, secret,
             locking, and retry settings.
@@ -120,7 +137,9 @@ def run_once(cfg: dict) -> None:
 
     try:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-        bridge_token = resolve_secret("BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"])
+        bridge_token = resolve_secret(
+            "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
+        )
     except subprocess.CalledProcessError as e:
         log.error("Failed to read a secret from 1Password: %s", e)
         sys.exit(1)
@@ -146,9 +165,15 @@ def run_once(cfg: dict) -> None:
         try:
             with pipeline_lock(lock_path):
                 process_input(
-                    video_url, cfg,
-                    item_hint={"video_id": video_id, "title": title, "published_at": item["published_at"]},
-                    github_token=github_token, bridge_token=bridge_token,
+                    video_url,
+                    cfg,
+                    item_hint={
+                        "video_id": video_id,
+                        "title": title,
+                        "published_at": item["published_at"],
+                    },
+                    github_token=github_token,
+                    bridge_token=bridge_token,
                 )
                 processed.add(video_id)
                 state["failed_attempts"].pop(video_id, None)
@@ -158,9 +183,13 @@ def run_once(cfg: dict) -> None:
 
         except NoTranscriptAvailableError:
             with pipeline_lock(lock_path):
-                log.warning("No subtitles/transcript available for %s, skipping permanently.", video_id)
+                log.warning(
+                    "No subtitles/transcript available for %s, skipping permanently.",
+                    video_id,
+                )
                 notify(
-                    cfg, "Pipeline: no subtitles available",
+                    cfg,
+                    "Pipeline: no subtitles available",
                     f'"{title}" ({video_url}) has no captions and could not be transcribed. '
                     "Skipped, will not be retried.",
                 )
@@ -179,7 +208,8 @@ def run_once(cfg: dict) -> None:
 
                 if attempts >= max_retries:
                     notify(
-                        cfg, f"Pipeline: giving up on a video after {attempts} failures",
+                        cfg,
+                        f"Pipeline: giving up on a video after {attempts} failures",
                         f'"{title}" ({video_url}) failed {attempts} times and will not be retried again.'
                         f"\n\nLast error:\n{err[-2000:]}",
                     )
@@ -188,7 +218,8 @@ def run_once(cfg: dict) -> None:
                     save_state(cfg["state_file"], state)
                 else:
                     notify(
-                        cfg, f"Pipeline: run failed (attempt {attempts}/{max_retries})",
+                        cfg,
+                        f"Pipeline: run failed (attempt {attempts}/{max_retries})",
                         f'"{title}" ({video_url}) failed, will retry on the next run.\n\nError:\n{err[-2000:]}',
                     )
             # continue on to the next video rather than aborting the whole run
@@ -198,19 +229,27 @@ def run_once(cfg: dict) -> None:
 def main():
     """
     Run one playlist-processing pass or continuously poll at a configured interval.
-    
+
     Command-line options select the configuration file, loop mode, and delay between
     polling passes. In loop mode, errors from an individual pass are logged and
     reported before processing resumes after the configured interval.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--loop", action="store_true", help="Run forever, polling every --interval "
-                         "seconds instead of exiting after one pass. For a containerized deployment "
-                         "with no external scheduler reaching into the container; use plain cron "
-                         "instead if running natively.")
-    parser.add_argument("--interval", type=int, default=1800,
-                         help="Seconds between polls in --loop mode. Default 1800 (30 min).")
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run forever, polling every --interval "
+        "seconds instead of exiting after one pass. For a containerized deployment "
+        "with no external scheduler reaching into the container; use plain cron "
+        "instead if running natively.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=1800,
+        help="Seconds between polls in --loop mode. Default 1800 (30 min).",
+    )
     args = parser.parse_args()
 
     if args.loop and args.interval <= 0:
@@ -248,7 +287,11 @@ if __name__ == "__main__":
         log.error("Fatal error:\n%s", err)
         try:
             _cfg = load_config(
-                (sys.argv[sys.argv.index("--config") + 1] if "--config" in sys.argv else "config.yaml")
+                (
+                    sys.argv[sys.argv.index("--config") + 1]
+                    if "--config" in sys.argv
+                    else "config.yaml"
+                )
             )
             notify(_cfg, "Pipeline: run crashed", err[-2000:])
         except Exception:
