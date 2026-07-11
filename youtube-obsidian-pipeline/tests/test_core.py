@@ -243,7 +243,7 @@ def test_ensure_repo_clone_and_update(tmp_path, monkeypatch):
     path = core.ensure_repo(
         "https://github.com/me/repo.git", str(tmp_path / "repo"), "main", "tok"
     )
-    assert path.exists() and calls[0][0][0] == "clone"
+    assert path.exists() and "clone" in calls[0][0]
     (path / ".git").mkdir()
     core.ensure_repo("https://github.com/me/repo.git", str(path), "main", "tok")
-    assert any(c[0][0] == "reset" for c in calls)
+    assert any("reset" in c[0] for c in calls)

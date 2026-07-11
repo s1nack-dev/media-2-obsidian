@@ -779,6 +779,7 @@ def process_input(
         f"Add transcript for {source_type}: {title}",
         cfg["github"]["commit_author_name"],
         cfg["github"]["commit_author_email"],
+        github_token,
     )
 
     subs_owner_repo = re.sub(
@@ -803,7 +804,8 @@ def process_input(
             subtitle_github_url,
             summary,
             content_tags,
-        )
+        ),
+        encoding="utf-8",
     )
 
     commit_and_push(
@@ -812,6 +814,7 @@ def process_input(
         f"Add video summary note: {title}",
         cfg["github"]["commit_author_name"],
         cfg["github"]["commit_author_email"],
+        github_token,
     )
 
     return {

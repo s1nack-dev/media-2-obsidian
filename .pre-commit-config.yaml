@@ -37,7 +37,7 @@ repos:
         language: python
         additional_dependencies: ["pip-audit==2.10.1"]
         entry: >-
-          bash -c 'uv export --project youtube-obsidian-pipeline --frozen
+          bash -c 'set -o pipefail; uv export --project youtube-obsidian-pipeline --frozen
           --no-dev --no-emit-project --format requirements-txt |
           pip-audit --strict -r /dev/stdin'
         files: ^youtube-obsidian-pipeline/(pyproject\.toml|uv\.lock)$

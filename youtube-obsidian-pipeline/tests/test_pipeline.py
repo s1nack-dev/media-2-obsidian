@@ -355,7 +355,7 @@ def test_download_direct_file_uses_safe_default_filename(monkeypatch, tmp_path, 
     assert path.read_bytes() == b"x"
 
 
-def test_process_input_raises_when_no_audio_or_subtitles(tmp_path, monkeypatch):
+def test_process_input_propagates_transcription_runtime_error(tmp_path, monkeypatch):
     media = tmp_path / "empty.mp3"
     media.write_bytes(b"x")
     cfg = {
@@ -369,3 +369,35 @@ def test_process_input_raises_when_no_audio_or_subtitles(tmp_path, monkeypatch):
     )
     with pytest.raises(RuntimeError):
         pipeline.process_input(str(media), cfg, github_token="t", bridge_token="b")
+
+
+def test_process_input_raises_no_transcript_available_when_no_subs_or_audio(
+    tmp_path, monkeypatch
+):
+    # Test the case where a YouTube video has no subtitles and downloading audio fails,
+    # so no transcript can be obtained at all
+    cfg = {
+        "bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"},
+        "youtube": {"subtitle_languages": ["en"]},
+        "transcription": {"model": "parakeet"},
+    }
+
+    # Mock download_subtitles to return None (no subtitles available)
+    monkeypatch.setattr(pipeline, "download_subtitles", lambda *args: None)
+
+    # Mock download_audio_via_ytdlp to return None (audio download failed)
+    monkeypatch.setattr(pipeline, "download_audio_via_ytdlp", lambda *args: None)
+
+    # Mock extract_youtube_video_id to return a valid ID
+    monkeypatch.setattr(pipeline, "extract_youtube_video_id", lambda url: "test_vid")
+
+    # Mock fetch_title_via_ytdlp to return a title
+    monkeypatch.setattr(pipeline, "fetch_title_via_ytdlp", lambda url: "Test Video")
+
+    with pytest.raises(pipeline.NoTranscriptAvailableError, match="No subtitles or transcribable audio"):
+        pipeline.process_input(
+            "https://www.youtube.com/watch?v=test_vid",
+            cfg,
+            github_token="t",
+            bridge_token="b",
+        )

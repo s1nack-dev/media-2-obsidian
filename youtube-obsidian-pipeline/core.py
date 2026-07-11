@@ -13,7 +13,9 @@ import os
 import re
 import smtplib
 import socket
+import ssl
 import subprocess
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
@@ -38,10 +40,15 @@ def op_read(ref: str) -> str:
     Returns:
         str: The secret value without surrounding whitespace.
     """
-    result = subprocess.run(
-        ["op", "read", ref], capture_output=True, text=True, check=True
-    )
-    return result.stdout.strip()
+    try:
+        result = subprocess.run(
+            ["op", "read", ref], capture_output=True, text=True, check=True, timeout=30
+        )
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"1Password CLI command 'op read {ref}' timed out after 30 seconds"
+        ) from e
 
 
 def resolve_secret(env_var: str, op_ref: str) -> str:
@@ -86,9 +93,19 @@ def notify(cfg: dict, subject: str, message: str) -> None:
                 data=body,
                 headers={"Content-Type": "application/json"},
             )
-            urllib.request.urlopen(  # nosec B310 - scheme validated above
-                req, timeout=15
-            )
+            # Disable automatic HTTP redirects to prevent redirect-based attacks
+            class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+                def http_error_302(self, req, fp, code, msg, headers):
+                    raise urllib.error.HTTPError(
+                        req.full_url, code, "Redirects disabled", headers, fp
+                    )
+
+                http_error_301 = http_error_303 = http_error_307 = http_error_308 = (
+                    http_error_302
+                )
+
+            opener = urllib.request.build_opener(NoRedirectHandler)
+            opener.open(req, timeout=15)  # nosec B310 - scheme validated above
         except Exception as e:
             log.error("Webhook notification failed: %s", e)
 
@@ -100,10 +117,11 @@ def notify(cfg: dict, subject: str, message: str) -> None:
             msg["Subject"] = subject
             msg["From"] = email_cfg["from_addr"]
             msg["To"] = email_cfg["to_addr"]
+            context = ssl.create_default_context()
             with smtplib.SMTP(
                 email_cfg["smtp_host"], email_cfg["smtp_port"], timeout=20
             ) as server:
-                server.starttls()
+                server.starttls(context=context)
                 if email_cfg.get("smtp_user"):
                     server.login(email_cfg["smtp_user"], password)
                 server.sendmail(
@@ -613,16 +631,23 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
     Ensure that a local repository is cloned or synchronized with the specified branch.
 
     Parameters:
-        repo_url (str): Repository URL.
+        repo_url (str): Repository URL (without embedded credentials).
         local_path (str): Local directory for the repository.
         branch (str): Branch to clone or synchronize.
-        token (str): Authentication token for the repository URL.
+        token (str): Authentication token, supplied ephemerally per operation.
 
     Returns:
         Path: Path to the local repository.
     """
     path = Path(local_path)
-    authed_url = repo_url.replace("https://", f"https://x-access-token:{token}@")
+
+    # Build a credential helper that echoes the token for this one operation.
+    # Git will invoke this helper when it needs authentication, and the token
+    # never gets written to .git/config.
+    cred_helper = (
+        f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
+    )
+
     if not (path / ".git").exists():
         # Not yet a real clone. Deliberately checking for .git rather than
         # path.exists(): a Docker bind mount auto-creates the host
@@ -634,10 +659,14 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
         # directory as its target, so this doesn't need special-casing
         # beyond picking the right branch here.
         path.mkdir(parents=True, exist_ok=True)
-        run_git(["clone", "--branch", branch, authed_url, str(path)], cwd=path.parent)
+        run_git(
+            ["-c", f"credential.helper={cred_helper}", "clone", "--branch", branch, repo_url, str(path)],
+            cwd=path.parent,
+        )
     else:
-        run_git(["remote", "set-url", "origin", authed_url], cwd=path)
-        run_git(["fetch", "origin", branch], cwd=path)
+        # Ensure origin is set to the clean URL (no embedded token)
+        run_git(["remote", "set-url", "origin", repo_url], cwd=path)
+        run_git(["-c", f"credential.helper={cred_helper}", "fetch", "origin", branch], cwd=path)
         run_git(["checkout", branch], cwd=path)
         run_git(["reset", "--hard", f"origin/{branch}"], cwd=path)
     run_git(["config", "core.ignorecase", "false"], cwd=path)
@@ -645,7 +674,7 @@ def ensure_repo(repo_url: str, local_path: str, branch: str, token: str) -> Path
 
 
 def commit_and_push(
-    repo_path: Path, files: list[Path], message: str, name: str, email: str
+    repo_path: Path, files: list[Path], message: str, name: str, email: str, token: str
 ) -> None:
     """
     Commit staged changes in a repository and push them to its origin.
@@ -656,20 +685,35 @@ def commit_and_push(
         message (str): Commit message.
         name (str): Git author name.
         email (str): Git author email.
+        token (str): Authentication token for push operation.
     """
     run_git(["config", "user.name", name], cwd=repo_path)
     run_git(["config", "user.email", email], cwd=repo_path)
     rel_files = [str(f.relative_to(repo_path)) for f in files]
     run_git(["add", "-f"] + rel_files, cwd=repo_path)
     run_git(["add", "-u"], cwd=repo_path)
-    status = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=repo_path, capture_output=True, text=True
-    )
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=True,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"git status --porcelain timed out after {GIT_TIMEOUT_SECONDS} seconds"
+        ) from e
     if not status.stdout.strip():
         log.info("Nothing to commit in %s", repo_path)
         return
     run_git(["commit", "-m", message], cwd=repo_path)
-    run_git(["push", "origin", "HEAD"], cwd=repo_path)
+    # Use ephemeral credential helper for authenticated push
+    cred_helper = (
+        f'!f() {{ test "$1" = get && echo "username=x-access-token" && echo "password={token}"; }}; f'
+    )
+    run_git(["-c", f"credential.helper={cred_helper}", "push", "origin", "HEAD"], cwd=repo_path)
 
 
 # --------------------------------------------------------------------------
