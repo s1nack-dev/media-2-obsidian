@@ -53,13 +53,13 @@ jobs:
   containers:
     name: Container checks
     runs-on: ubuntu-latest
-    env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - run: bash scripts/ci/checks.sh containers
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
 
   secrets:
     name: Secret scans
