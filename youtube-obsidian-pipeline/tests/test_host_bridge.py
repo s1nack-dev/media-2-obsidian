@@ -76,15 +76,18 @@ def test_bridge_json_validation():
 
 
 def test_bridge_transcript_validation(monkeypatch):
-    called = False
+    called = {"summarize": False, "tags": False}
 
     def summarize(*args):
-        nonlocal called
-        called = True
+        called["summarize"] = True
         return "summary"
 
+    def tags(*args):
+        called["tags"] = True
+        return ["tag"]
+
     monkeypatch.setattr(host_bridge, "summarize_with_claude", summarize)
-    monkeypatch.setattr(host_bridge, "generate_tags_with_claude", lambda *args: ["tag"])
+    monkeypatch.setattr(host_bridge, "generate_tags_with_claude", tags)
     for path in ("/summarize", "/tags"):
         for body in (
             b'{"transcript":"\\u0000\\u0000"}',
@@ -94,7 +97,8 @@ def test_bridge_transcript_validation(monkeypatch):
             h = _handler(path, body)
             h.do_POST()
             assert h.status == 400
-    assert not called
+    assert not called["summarize"]
+    assert not called["tags"]
 
 
 def test_bridge_summary_and_tags(monkeypatch):
