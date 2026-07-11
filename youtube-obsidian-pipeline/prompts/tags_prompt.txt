@@ -1,0 +1,9 @@
+Analyze the following transcription and generate 3 to 8 relevant tags describing its content.
+
+Rules:
+- Tags must reflect specific topics, themes, people, organizations, or domains actually discussed - not generic words like "video", "podcast", "transcript", or "summary".
+- Each tag must be lowercase, using hyphens instead of spaces (e.g. "machine-learning", not "Machine Learning").
+- Return ONLY the tags, one per line, no numbering, no bullets, no other text.
+
+Transcription:
+{transcription}

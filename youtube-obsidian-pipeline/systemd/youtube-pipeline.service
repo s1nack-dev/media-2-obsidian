@@ -1,0 +1,34 @@
+# Install:
+#   sudo cp systemd/youtube-pipeline.service /etc/systemd/system/
+#   sudo cp systemd/youtube-pipeline.timer /etc/systemd/system/
+#   (edit WorkingDirectory, ExecStart, User, and EnvironmentFile paths below first)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now youtube-pipeline.timer
+#
+# Check status / logs:
+#   systemctl status youtube-pipeline.timer
+#   systemctl list-timers youtube-pipeline.timer
+#   journalctl -u youtube-pipeline.service -f
+#
+# Run once manually (bypassing the timer):
+#   sudo systemctl start youtube-pipeline.service
+
+[Unit]
+Description=YouTube playlist -> subtitles + AI summary -> GitHub + Obsidian
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# Change to wherever you deployed this project:
+WorkingDirectory=/opt/youtube-obsidian-pipeline
+# Holds GITHUB_TOKEN=... and (if using email alerts) SMTP_PASSWORD=...
+EnvironmentFile=/opt/youtube-obsidian-pipeline/.env
+# Use the full path to uv (find it with `which uv`) - systemd services get a
+# minimal PATH that usually doesn't include ~/.local/bin. Wrap with `op run --`
+# to resolve op:// secret references from the EnvironmentFile at runtime.
+ExecStart=/usr/bin/op run -- /root/.local/bin/uv run python fetch_playlist.py --config config.yaml
+# Run as a dedicated non-root user if you have one set up (and adjust the
+# uv path above to that user's install location):
+# User=youtube-pipeline
+TimeoutStartSec=1200
