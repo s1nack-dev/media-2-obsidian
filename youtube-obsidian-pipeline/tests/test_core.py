@@ -59,8 +59,13 @@ def test_validate_public_url_accepts_public(monkeypatch):
 
 def test_summarize_retries_polluted_response(monkeypatch):
     responses = [type("R", (), {"returncode": 0, "stdout": "planning...", "stderr": ""})(), type("R", (), {"returncode": 0, "stdout": "prefix\n## SUMMARY\n- done", "stderr": ""})()]
-    monkeypatch.setattr(core.subprocess, "run", lambda *a, **k: responses.pop(0))
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return responses.pop(0)
+    monkeypatch.setattr(core.subprocess, "run", run)
     assert core.summarize_with_claude("claude", "transcript").startswith("## SUMMARY")
+    assert all("--safe-mode" in command and command[command.index("--tools") + 1] == "" for command in calls)
 
 
 def test_summarize_failure(monkeypatch):

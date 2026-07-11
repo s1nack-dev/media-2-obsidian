@@ -41,6 +41,15 @@ COPY core.py pipeline.py fetch_playlist.py server.py bridge_client.py youtube_au
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
+# Run as an unprivileged user. Bind-mounted state, lock, token, and repository
+# paths must be writable by this UID/GID (configurable at build time).
+ARG PIPELINE_UID=1000
+ARG PIPELINE_GID=1000
+RUN groupadd --gid "$PIPELINE_GID" pipeline \
+    && useradd --uid "$PIPELINE_UID" --gid pipeline --no-create-home pipeline \
+    && chown -R pipeline:pipeline /app
+USER pipeline
+
 # Default: run the webhook server, bound to all interfaces (the compose
 # network, not the host) since it's inside a container now. Override
 # `command:` in docker-compose.yml for the fetch_playlist.py --loop

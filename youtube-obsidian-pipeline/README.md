@@ -145,6 +145,10 @@ DECISIONS MADE, OPEN QUESTIONS/RISKS, ACTION ITEMS) and one that generates
 merged into the note's `tags:` frontmatter alongside the base
 `video-summary`/`{source_type}` tags.
 
+Both calls treat transcript text as untrusted: Claude Code runs in safe mode
+with built-in tools, MCP servers, skills, hooks/plugins, and session persistence
+disabled. The model can return text but cannot read files or invoke local tools.
+
 Install and log in once, interactively:
 
 ```bash

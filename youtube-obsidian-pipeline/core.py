@@ -373,6 +373,14 @@ Transcription:
 
 _SUMMARY_MARKER = "## SUMMARY"
 _SUMMARIZE_ATTEMPTS = 2
+_CLAUDE_UNTRUSTED_INPUT_ARGS = [
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--mcp-config", "{}",
+    "--tools", "",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+]
 
 
 def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
@@ -398,7 +406,7 @@ def summarize_with_claude(claude_cmd: str, transcript_text: str) -> str:
 
     for attempt in range(1, _SUMMARIZE_ATTEMPTS + 1):
         result = subprocess.run(
-            [claude_cmd, "-p", prompt],
+            [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
             capture_output=True, text=True, timeout=600, env=clean_env,
         )
         if result.returncode != 0:
@@ -476,7 +484,7 @@ def generate_tags_with_claude(claude_cmd: str, transcript_text: str) -> list[str
     }
 
     result = subprocess.run(
-        [claude_cmd, "-p", prompt],
+        [claude_cmd, *_CLAUDE_UNTRUSTED_INPUT_ARGS, "-p", prompt],
         capture_output=True, text=True, timeout=600, env=clean_env,
     )
     if result.returncode != 0:
