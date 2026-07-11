@@ -16,10 +16,16 @@ jobs:
   quality:
     name: Quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          # A plain ref (branch name, not the pull_request event's default
+          # merge-commit ref) so the auto-commit step below can push straight
+          # back to it instead of landing on a detached HEAD.
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
@@ -34,8 +40,17 @@ jobs:
       - run: uv sync --project youtube-obsidian-pipeline --frozen --extra test
       - run: pre-commit run ruff-check --all-files --hook-stage pre-commit
       - run: pre-commit run ruff-format --all-files --hook-stage pre-commit
-      - name: Ensure formatting hooks made no changes
+      # Fork PRs get a read-only GITHUB_TOKEN no matter what `permissions:`
+      # above says, so there's nothing to push back to - keep today's
+      # behavior there and just fail loudly if Ruff would've changed files.
+      - name: Ensure formatting hooks made no changes (fork PRs only)
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: git diff --exit-code
+      - name: Commit and push Ruff fixes
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: apply Ruff auto-fixes [skip ci]"
       - run: pre-commit run pytest --all-files --hook-stage pre-commit
 
   python-security:
