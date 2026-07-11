@@ -73,6 +73,20 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
         raw_input = _job_queue.get()
         try:
             log.info("Processing queued job: %s", raw_input)
+
+            input_type = detect_input_type(raw_input)
+            if input_type in ("youtube", "generic_link"):
+                try:
+                    validate_public_url(raw_input)
+                except ValueError as e:
+                    log.error("URL validation failed at execution time for %s: %s", raw_input, e)
+                    notify(
+                        cfg,
+                        "Pipeline: URL validation failed (webhook)",
+                        f"{raw_input}\n\nURL validation failed at execution time: {e}",
+                    )
+                    continue
+
             with pipeline_lock(lock_path):
                 result = process_input(
                     raw_input, cfg, github_token=github_token, bridge_token=bridge_token
