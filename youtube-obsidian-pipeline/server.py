@@ -79,7 +79,11 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
                 try:
                     validate_public_url(raw_input)
                 except ValueError as e:
-                    log.error("URL validation failed at execution time for %s: %s", raw_input, e)
+                    log.error(
+                        "URL validation failed at execution time for %s: %s",
+                        raw_input,
+                        e,
+                    )
                     notify(
                         cfg,
                         "Pipeline: URL validation failed (webhook)",
