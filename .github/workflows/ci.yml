@@ -38,11 +38,23 @@ jobs:
       - name: Validate workflow hook coverage
         run: bash scripts/ci/validate-workflow-hooks.sh
       - run: uv sync --project youtube-obsidian-pipeline --frozen --extra test
-      - run: pre-commit run ruff-check --all-files --hook-stage pre-commit
-      - run: pre-commit run ruff-format --all-files --hook-stage pre-commit
+      # pre-commit always reports a hook as "Failed" when it modifies files,
+      # regardless of the underlying tool's own exit code - that's expected
+      # for local `git commit` use (it wants you to re-stage and re-commit),
+      # but it would abort this job before the auto-commit step below ever
+      # ran. These two are allowed to fail here; the re-run near the bottom
+      # of this job is the real gate that catches violations Ruff couldn't
+      # fix on its own.
+      - name: Ruff check (auto-fix)
+        continue-on-error: true
+        run: pre-commit run ruff-check --all-files --hook-stage pre-commit
+      - name: Ruff format (auto-fix)
+        continue-on-error: true
+        run: pre-commit run ruff-format --all-files --hook-stage pre-commit
       # Fork PRs get a read-only GITHUB_TOKEN no matter what `permissions:`
       # above says, so there's nothing to push back to - keep today's
-      # behavior there and just fail loudly if Ruff would've changed files.
+      # behavior there and fail loudly if the branch, as committed on
+      # GitHub, needed any change at all (fixable or not).
       - name: Ensure formatting hooks made no changes (fork PRs only)
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
         run: git diff --exit-code
@@ -51,6 +63,13 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "style: apply Ruff auto-fixes [skip ci]"
+      # Real gate: everything auto-fixable is already applied (and, on
+      # non-fork branches, committed) by now, so this should be a clean
+      # no-op. It only fails if a violation survives auto-fixing.
+      - name: Ruff check (verify no unfixable issues remain)
+        run: pre-commit run ruff-check --all-files --hook-stage pre-commit
+      - name: Ruff format (verify formatting is stable)
+        run: pre-commit run ruff-format --all-files --hook-stage pre-commit
       - run: pre-commit run pytest --all-files --hook-stage pre-commit
 
   python-security:
