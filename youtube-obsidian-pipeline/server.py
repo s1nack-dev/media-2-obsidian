@@ -183,9 +183,7 @@ def make_handler(auth_token: str):
                 )
                 return
             if not parsed.hostname:
-                self._send_json(
-                    400, {"error": "HTTP(S) URL must have a hostname"}
-                )
+                self._send_json(400, {"error": "HTTP(S) URL must have a hostname"})
                 return
 
             try:
