@@ -284,12 +284,17 @@ def fetch_published_at_via_ytdlp(url: str) -> str | None:
         str | None: An ISO `YYYY-MM-DD` date, or `None` if yt-dlp can't
         provide one (unsupported site, no date in the source metadata, etc.)
     """
-    result = subprocess.run(
-        ["yt-dlp", "--skip-download", "--print", "%(upload_date)s", url],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--skip-download", "--print", "%(upload_date)s", url],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        log.warning("yt-dlp published_at fetch timed out for %s after 60 seconds", url)
+        return None
+
     if result.returncode != 0 or not result.stdout.strip():
         return None
     raw = result.stdout.strip().splitlines()[0].strip()
