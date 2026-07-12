@@ -99,16 +99,16 @@ class NoTranscriptAvailableError(PipelineError):
 
 def detect_input_type(raw_input: str) -> str:
     """
-    Classifies an input as a local file, YouTube URL, or generic HTTP(S) link.
+    Classifies an HTTP(S) URL as YouTube or a generic link.
 
     Parameters:
-        raw_input (str): Local path or HTTP(S) URL to classify.
+        raw_input (str): HTTP(S) URL to classify.
 
     Returns:
-        str: One of `"local_file"`, `"youtube"`, or `"generic_link"`.
+        str: Either `"youtube"` or `"generic_link"`.
 
     Raises:
-        ValueError: If the input is neither an existing local path nor an HTTP(S) URL.
+        ValueError: If the input is not a hosted HTTP(S) URL.
     """
     parsed = urlparse(raw_input)
     if parsed.scheme in ("http", "https"):
@@ -120,14 +120,7 @@ def detect_input_type(raw_input: str) -> str:
         if YOUTUBE_HOST_RE.search(host):
             return "youtube"
         return "generic_link"
-    # Local files are an explicit CLI/library input. The HTTP webhook rejects
-    # non-hosted URLs before calling this function, so network input cannot
-    # reach this intentional local-file check.
-    if Path(raw_input).exists():  # lgtm [py/path-injection]
-        return "local_file"
-    raise ValueError(
-        f"Input {raw_input!r} is not an existing local file and not a valid http(s) URL."
-    )
+    raise ValueError(f"Input {raw_input!r} is not a valid hosted http(s) URL.")
 
 
 def extract_youtube_video_id(url: str) -> str:
@@ -586,7 +579,7 @@ def find_sidecar_subtitle(local_path: Path) -> Path | None:
 
 
 def process_input(
-    raw_input: str,
+    raw_input: str | Path,
     cfg: dict,
     item_hint: dict | None = None,
     github_token: str | None = None,
@@ -596,7 +589,7 @@ def process_input(
     Process a media input through transcription, summarization, and GitHub publication.
 
     Parameters:
-        raw_input (str): Local media path or media URL.
+        raw_input (str | Path): Hosted media URL, or a local media `Path`.
         cfg (dict): Pipeline, transcription, and GitHub configuration.
         item_hint (dict | None): Optional known metadata such as ``title``,
             ``published_at``, or ``video_id``.
@@ -611,7 +604,10 @@ def process_input(
         NoTranscriptAvailableError: If no subtitles or transcribable audio is available.
     """
     item_hint = item_hint or {}
-    source_type = detect_input_type(raw_input)
+    local_path = raw_input if isinstance(raw_input, Path) else None
+    source_type = (
+        "local_file" if local_path is not None else detect_input_type(raw_input)
+    )
 
     trans_cfg = cfg.get("transcription", {}) or {}
     model_id = trans_cfg.get("model", "mlx-community/parakeet-tdt-0.6b-v3")
@@ -639,7 +635,7 @@ def process_input(
         workdir = Path(tmp)
 
         if source_type == "local_file":
-            local_path = Path(raw_input)
+            assert local_path is not None
             if title is None:
                 title = local_path.stem
 
@@ -850,7 +846,11 @@ def main():
     cfg = load_config(args.config)
 
     try:
-        result = process_input(args.input, cfg)
+        parsed_input = urlparse(args.input)
+        cli_input = (
+            args.input if parsed_input.scheme in ("http", "https") else Path(args.input)
+        )
+        result = process_input(cli_input, cfg)
         log.info("Done: %s -> %s", result["title"], result["note_path"])
     except NoTranscriptAvailableError as e:
         log.error("No transcript available: %s", e)
