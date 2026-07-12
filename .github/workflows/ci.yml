@@ -40,13 +40,15 @@ jobs:
         run: pre-commit run ruff-format --all-files --hook-stage pre-commit
       - name: Commit formatting changes
         if: always()
+        env:
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           if ! git diff --quiet; then
             git config user.email "action@github.com"
             git config user.name "GitHub Action"
             git add -A
             git commit -m "Apply Ruff formatting"
-            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+            git push origin "HEAD:${TARGET_BRANCH}"
           fi
       - name: Ensure no uncommitted changes
         run: git diff --exit-code
