@@ -108,8 +108,8 @@ def get_access_token(cfg: dict, timeout: int = 15) -> str | None:
             log.warning("Spotify token request failed with status %d", status)
             return None
         return json.loads(body).get("access_token")
-    except Exception as e:
-        log.warning("Spotify token request failed: %s", e)
+    except Exception:
+        log.warning("Spotify token request failed")
         return None
 
 
