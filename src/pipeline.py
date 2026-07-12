@@ -648,7 +648,11 @@ def _resolve_local_file(
         lang = "parakeet"
 
     return ProviderResolution(
-        title=title, raw_transcript_body=raw, transcript_text=text, lang=lang
+        title=title,
+        published_at=item_hint.get("published_at"),
+        raw_transcript_body=raw,
+        transcript_text=text,
+        lang=lang,
     )
 
 
