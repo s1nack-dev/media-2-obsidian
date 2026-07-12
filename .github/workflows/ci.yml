@@ -17,7 +17,7 @@ jobs:
     name: Quality
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -38,6 +38,16 @@ jobs:
         run: pre-commit run ruff-check --all-files --hook-stage pre-commit
       - name: Ruff format
         run: pre-commit run ruff-format --all-files --hook-stage pre-commit
+      - name: Commit formatting changes
+        if: always()
+        run: |
+          if ! git diff --quiet; then
+            git config user.email "action@github.com"
+            git config user.name "GitHub Action"
+            git add -A
+            git commit -m "Apply Ruff formatting"
+            git push origin HEAD:${{ github.head_ref || github.ref_name }}
+          fi
       - name: Ensure no uncommitted changes
         run: git diff --exit-code
       - run: pre-commit run pytest --all-files --hook-stage pre-commit

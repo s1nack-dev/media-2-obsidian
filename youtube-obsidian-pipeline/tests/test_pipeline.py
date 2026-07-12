@@ -20,6 +20,12 @@ def test_detect_input_type_local_and_invalid(tmp_path):
         pipeline.detect_input_type("not a url")
 
 
+@pytest.mark.parametrize("value", ["http:foo", "https:", "http:///tmp/file"])
+def test_detect_input_type_hostless_http_inputs_use_local_path_handling(value):
+    with pytest.raises(ValueError):
+        pipeline.detect_input_type(value)
+
+
 @pytest.mark.parametrize(
     "url, expected",
     [

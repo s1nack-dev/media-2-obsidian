@@ -110,14 +110,18 @@ def detect_input_type(raw_input: str) -> str:
     Raises:
         ValueError: If the input is neither an existing local path nor an HTTP(S) URL.
     """
-    if Path(raw_input).exists():
-        return "local_file"
     parsed = urlparse(raw_input)
     if parsed.scheme in ("http", "https"):
-        host = (parsed.hostname or "").lower()
+        if not parsed.hostname:
+            raise ValueError(
+                f"Input {raw_input!r} has an HTTP(S) scheme but no hostname."
+            )
+        host = parsed.hostname.lower()
         if YOUTUBE_HOST_RE.search(host):
             return "youtube"
         return "generic_link"
+    if Path(raw_input).exists():
+        return "local_file"
     raise ValueError(
         f"Input {raw_input!r} is not an existing local file and not a valid http(s) URL."
     )

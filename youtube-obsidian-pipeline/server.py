@@ -36,6 +36,7 @@ import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse
 
 from core import (
     load_config,
@@ -173,6 +174,18 @@ def make_handler(auth_token: str):
             raw_input = (payload.get("input") or "").strip()
             if not raw_input:
                 self._send_json(400, {"error": "missing 'input' field"})
+                return
+
+            parsed = urlparse(raw_input)
+            if parsed.scheme not in ("http", "https"):
+                self._send_json(
+                    400, {"error": "only http(s) URLs are accepted over the network"}
+                )
+                return
+            if not parsed.hostname:
+                self._send_json(
+                    400, {"error": "HTTP(S) URL must have a hostname"}
+                )
                 return
 
             try:
