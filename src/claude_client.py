@@ -17,7 +17,7 @@ from pathlib import Path
 
 log = logging.getLogger("pipeline")
 
-_ASSETS_DIR = Path(__file__).parent
+_ASSETS_DIR = Path(__file__).resolve().parent.parent
 SUMMARY_PROMPT_TEMPLATE = (_ASSETS_DIR / "prompts" / "summary_prompt.txt").read_text()
 TAGS_PROMPT_TEMPLATE = (_ASSETS_DIR / "prompts" / "tags_prompt.txt").read_text()
 _SANDBOX_PROFILE_TEMPLATE = (_ASSETS_DIR / "sandbox" / "claude.sb.tmpl").read_text()

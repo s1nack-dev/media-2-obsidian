@@ -6,8 +6,9 @@ Two ways to use this:
   playlist. Run on a schedule (cron/systemd) on your own server, it picks
   up new videos automatically.
 - **One-off mode** (`pipeline.py --input ...`): manually process a single
-  local video/audio file, a YouTube URL, or pretty much any other link
-  (podcast page, Vimeo, direct `.mp4`/`.mp3` link, etc.).
+  local video/audio file, a YouTube URL, a Spotify podcast episode, or
+  pretty much any other link (podcast page, Vimeo, direct `.mp4`/`.mp3`
+  link, etc.).
 
 Either way, the pipeline gets a transcript (existing subtitles/captions if
 available, otherwise downloads audio and transcribes it locally with
@@ -117,7 +118,7 @@ headless, run this step on your laptop instead, then copy the resulting
 
 ```bash
 uv sync
-op run -- uv run python youtube_auth.py --config config.yaml
+op run -- uv run python src/youtube_auth.py --config config.yaml
 ```
 
 A browser window opens, asks you to log in and approve read-only access to
@@ -223,6 +224,12 @@ Edit `config.yaml`:
   running on the Mac). If you plan to run containerized (step 9 below), use
   `http://host.docker.internal:8081` instead. The example config defaults to
   the containerized value.
+- `spotify.client_id_op_ref` / `spotify.client_secret_op_ref` — optional,
+  only needed to resolve Spotify episode/show names via the official Web
+  API instead of scraping the public episode page. Create an app at
+  https://developer.spotify.com/dashboard for a client id/secret (metadata
+  scopes only — this pipeline never requests streaming access). Leave both
+  blank to skip this entirely.
 - Everything else has sane defaults.
 
 Note: the first time transcription actually runs for a given
@@ -237,7 +244,7 @@ ever sent anywhere).
 
 Start the bridge service first (required for both native and containerized deployments):
 ```bash
-op run -- uv run python host_bridge.py --config config.yaml &
+op run -- uv run python src/host_bridge.py --config config.yaml &
 ```
 
 This starts `host_bridge.py` in the background. It must remain running for all
@@ -246,16 +253,16 @@ The bridge provides transcription and summarization services to the pipeline.
 
 Playlist mode:
 ```bash
-op run -- uv run python fetch_playlist.py --config config.yaml
+op run -- uv run python src/fetch_playlist.py --config config.yaml
 ```
 
 Add one video to your playlist first so there's something to process.
 
 One-off mode, for a single input (no playlist/state involved):
 ```bash
-op run -- uv run python pipeline.py --config config.yaml --input "https://www.youtube.com/watch?v=..."
-op run -- uv run python pipeline.py --config config.yaml --input ./some-local-video.mp4
-op run -- uv run python pipeline.py --config config.yaml --input "https://example.com/some-podcast-episode"
+op run -- uv run python src/pipeline.py --config config.yaml --input "https://www.youtube.com/watch?v=..."
+op run -- uv run python src/pipeline.py --config config.yaml --input ./some-local-video.mp4
+op run -- uv run python src/pipeline.py --config config.yaml --input "https://example.com/some-podcast-episode"
 ```
 
 Check:
@@ -286,7 +293,7 @@ crontab -e
 Add (runs every 30 minutes):
 
 ```
-*/30 * * * * cd /path/to/media-2-obsidian && /usr/local/bin/op run -- /root/.local/bin/uv run python fetch_playlist.py --config config.yaml >> pipeline.log 2>&1
+*/30 * * * * cd /path/to/media-2-obsidian && /usr/local/bin/op run -- /root/.local/bin/uv run python src/fetch_playlist.py --config config.yaml >> pipeline.log 2>&1
 ```
 
 Cron runs with a minimal environment, so use full paths for both `op` and
@@ -368,7 +375,7 @@ processes.
    the containers, stop it whenever — no `launchd`/persistent service):
    ```bash
    uv sync --extra mlx   # only needed here - the mlx extra isn't installed by default
-   op run -- uv run python host_bridge.py --config config.yaml &
+   op run -- uv run python src/host_bridge.py --config config.yaml &
    curl http://127.0.0.1:8081/healthz   # confirm it's up before continuing
    ```
 
@@ -495,6 +502,26 @@ they were added to the playlist.
   enclosure URL for that episode, then transcribes it directly (no video
   ever downloaded). If that lookup fails for any reason, it falls back to
   the normal generic-link handling.
+- **Spotify podcast episodes** (e.g. `https://open.spotify.com/episode/...`)
+  are handled as a transcript-first integration, not a Spotify downloader —
+  Spotify's Web API explicitly prohibits downloading Spotify-streamed
+  content, and doesn't expose episode transcripts or a show's RSS feed URL
+  either way. Instead: the episode's title/show name is resolved via the
+  official Spotify Web API (if `spotify.client_id_op_ref`/
+  `client_secret_op_ref` are configured in `config.yaml` — metadata only,
+  no streaming scopes) or, with no credentials configured, by reading the
+  public episode page's title/description. From the show name, the
+  pipeline looks up the podcast's real RSS feed via Apple's free iTunes
+  Search API and finds the matching episode by title. If that feed
+  publishes a Podcasting 2.0 `<podcast:transcript>` link (SRT, VTT, JSON, or
+  plain text), that's used directly — no audio download needed. Otherwise
+  it falls back to the feed's own `<enclosure>` audio URL (the podcast's
+  original file, never Spotify's stream) and transcribes it locally with
+  Parakeet, same as everything else. Only podcast episodes are supported —
+  Spotify-exclusive/private episodes, shows, and music tracks are reported
+  as unsupported rather than attempted. Spotify developer credentials are
+  entirely optional; without them, Spotify episodes still work as long as
+  the episode page and the show's RSS feed are public.
 - Very long transcripts are truncated to ~150k characters before
   summarization to stay within a safe prompt size; this covers several
   hours of typical speech.

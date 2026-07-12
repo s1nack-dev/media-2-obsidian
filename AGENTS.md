@@ -8,7 +8,7 @@ A personal automation pipeline that turns media into an Obsidian note: it gets a
 
 **Requires an Apple Silicon Mac** for the transcription/summarization backend (`host_bridge.py`) — Parakeet needs MLX (Metal/Neural Engine, no Linux/Windows/Intel-Mac support), and the Claude CLI's subscription OAuth is tied to this Mac's keychain/session. Everything else (`pipeline.py`, `fetch_playlist.py`, `server.py`) can run natively OR in Docker containers — see "Two deployment modes" below. The `systemd/` unit files predate the MLX requirement and assume a Linux deployment; they're stale until ported to `launchd`.
 
-Five entry points, all at the repo root:
+Five entry points, all under `src/`:
 - `fetch_playlist.py` — polls a private YouTube playlist for new videos (scheduled via cron, or `--loop` in a container), then calls into `pipeline.py` per video.
 - `pipeline.py` — processes one input at a time (local file, YouTube URL, or any other link yt-dlp can handle); runnable standalone via `--input`, or imported as a library by `fetch_playlist.py`/`server.py`. Has no MLX/parakeet or claude-CLI dependency itself — talks to `host_bridge.py` over HTTP for both (see `bridge_client.py`), which is what makes it containerizable.
 - `server.py` — optional webhook mode: a stdlib-only HTTP server exposing `POST /process` behind a Cloudflare Tunnel (`cloudflared`, see `docker/`). Requests are auth-token-gated, queued, and processed one at a time by a background worker thread calling `process_input()`.
@@ -26,14 +26,14 @@ Five entry points, all at the repo root:
 ```bash
 uv sync --extra mlx              # host: installs parakeet-mlx too (needed for host_bridge.py)
 uv sync                          # container/base: skips parakeet-mlx (no Linux wheels, and pipeline.py doesn't need it)
-op run -- uv run python host_bridge.py --config config.yaml          # must be running before anything below works
-op run -- uv run python fetch_playlist.py --config config.yaml       # playlist mode (scheduled)
-op run -- uv run python pipeline.py --config config.yaml --input <path-or-url>   # one-off mode
+op run -- uv run python src/host_bridge.py --config config.yaml          # must be running before anything below works
+op run -- uv run python src/fetch_playlist.py --config config.yaml       # playlist mode (scheduled)
+op run -- uv run python src/pipeline.py --config config.yaml --input <path-or-url>   # one-off mode
 ```
 
 First-time auth (needs a browser — run on a machine with one, copy token to server):
 ```bash
-uv run python youtube_auth.py --config config.yaml
+uv run python src/youtube_auth.py --config config.yaml
 ```
 
 ## Architecture
@@ -61,7 +61,7 @@ uv run python youtube_auth.py --config config.yaml
 
 ## Scheduling
 
-Native: `fetch_playlist.py` is scheduled via cron; `pipeline.py --input` is for manual one-off runs. `host_bridge.py` is deliberately run ad hoc, not as a persistent/managed service (no launchd job) — start it manually (`op run -- uv run python host_bridge.py --config config.yaml &`) before using `pipeline.py`/`fetch_playlist.py`/`server.py` (native or containerized), stop it whenever.
+Native: `fetch_playlist.py` is scheduled via cron; `pipeline.py --input` is for manual one-off runs. `host_bridge.py` is deliberately run ad hoc, not as a persistent/managed service (no launchd job) — start it manually (`op run -- uv run python src/host_bridge.py --config config.yaml &`) before using `pipeline.py`/`fetch_playlist.py`/`server.py` (native or containerized), stop it whenever.
 
 Containerized: `docker-compose.yml` runs `pipeline-server` (server.py) and `pipeline-fetch` (`fetch_playlist.py --loop`) as always-on services (`restart: unless-stopped`), so neither needs external scheduling. `host_bridge.py` still has to be started manually first (see above) - the containers will fail every job with a connection error to `host.docker.internal` until it's up.
 

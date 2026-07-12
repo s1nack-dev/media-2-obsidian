@@ -27,7 +27,8 @@ except (ModuleNotFoundError, ImportError):
         }
     )
     spec = importlib.util.spec_from_file_location(
-        "transcribe_backend", Path(__file__).parents[1] / "transcribe_backend.py"
+        "transcribe_backend",
+        Path(__file__).parents[1] / "src" / "transcribe_backend.py",
     )
     tb = importlib.util.module_from_spec(spec)
     sys.modules["transcribe_backend"] = tb
