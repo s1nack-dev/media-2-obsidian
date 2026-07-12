@@ -64,7 +64,7 @@ services:
     image: youtube-obsidian-pipeline
     user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"
     restart: unless-stopped
-    command: ["python", "server.py", "--config", "config.yaml", "--host", "0.0.0.0"]
+    command: ["python", "src/server.py", "--config", "config.yaml", "--host", "0.0.0.0"]
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
@@ -89,7 +89,7 @@ services:
     image: youtube-obsidian-pipeline
     user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"
     restart: unless-stopped
-    command: ["python", "fetch_playlist.py", "--config", "config.yaml", "--loop"]
+    command: ["python", "src/fetch_playlist.py", "--config", "config.yaml", "--loop"]
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}

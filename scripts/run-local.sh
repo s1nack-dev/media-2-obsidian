@@ -8,8 +8,8 @@
 #   scripts/run-local.sh stop    # stop the host_bridge.py this script started
 #
 # After start, in another terminal (from the repo root):
-#   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python pipeline.py --config config.yaml --input <path-or-url>
-#   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python fetch_playlist.py --config config.yaml
+#   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python src/pipeline.py --config config.yaml --input <path-or-url>
+#   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python src/fetch_playlist.py --config config.yaml
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -52,7 +52,7 @@ cmd_start() {
             exit 1
         fi
         echo "Starting host_bridge.py (native, ad hoc) on port ${port}..."
-        nohup op run -- uv run --extra mlx python host_bridge.py --config config.yaml \
+        nohup op run -- uv run --extra mlx python src/host_bridge.py --config config.yaml \
             > "$LOG_FILE" 2>&1 &
         echo $! > "$PID_FILE"
 
@@ -69,7 +69,7 @@ cmd_start() {
 
     echo
     echo "Ready. Point pipeline.py/fetch_playlist.py at it with:"
-    echo "  BRIDGE_URL=http://127.0.0.1:${port} op run -- uv run python pipeline.py --config config.yaml --input <path-or-url>"
+    echo "  BRIDGE_URL=http://127.0.0.1:${port} op run -- uv run python src/pipeline.py --config config.yaml --input <path-or-url>"
 }
 
 # cmd_stop stops the host_bridge.py process recorded in the PID file and removes the PID file.

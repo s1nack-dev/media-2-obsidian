@@ -118,7 +118,7 @@ headless, run this step on your laptop instead, then copy the resulting
 
 ```bash
 uv sync
-op run -- uv run python youtube_auth.py --config config.yaml
+op run -- uv run python src/youtube_auth.py --config config.yaml
 ```
 
 A browser window opens, asks you to log in and approve read-only access to
@@ -244,7 +244,7 @@ ever sent anywhere).
 
 Start the bridge service first (required for both native and containerized deployments):
 ```bash
-op run -- uv run python host_bridge.py --config config.yaml &
+op run -- uv run python src/host_bridge.py --config config.yaml &
 ```
 
 This starts `host_bridge.py` in the background. It must remain running for all
@@ -253,16 +253,16 @@ The bridge provides transcription and summarization services to the pipeline.
 
 Playlist mode:
 ```bash
-op run -- uv run python fetch_playlist.py --config config.yaml
+op run -- uv run python src/fetch_playlist.py --config config.yaml
 ```
 
 Add one video to your playlist first so there's something to process.
 
 One-off mode, for a single input (no playlist/state involved):
 ```bash
-op run -- uv run python pipeline.py --config config.yaml --input "https://www.youtube.com/watch?v=..."
-op run -- uv run python pipeline.py --config config.yaml --input ./some-local-video.mp4
-op run -- uv run python pipeline.py --config config.yaml --input "https://example.com/some-podcast-episode"
+op run -- uv run python src/pipeline.py --config config.yaml --input "https://www.youtube.com/watch?v=..."
+op run -- uv run python src/pipeline.py --config config.yaml --input ./some-local-video.mp4
+op run -- uv run python src/pipeline.py --config config.yaml --input "https://example.com/some-podcast-episode"
 ```
 
 Check:
@@ -293,7 +293,7 @@ crontab -e
 Add (runs every 30 minutes):
 
 ```
-*/30 * * * * cd /path/to/media-2-obsidian && /usr/local/bin/op run -- /root/.local/bin/uv run python fetch_playlist.py --config config.yaml >> pipeline.log 2>&1
+*/30 * * * * cd /path/to/media-2-obsidian && /usr/local/bin/op run -- /root/.local/bin/uv run python src/fetch_playlist.py --config config.yaml >> pipeline.log 2>&1
 ```
 
 Cron runs with a minimal environment, so use full paths for both `op` and
@@ -375,7 +375,7 @@ processes.
    the containers, stop it whenever — no `launchd`/persistent service):
    ```bash
    uv sync --extra mlx   # only needed here - the mlx extra isn't installed by default
-   op run -- uv run python host_bridge.py --config config.yaml &
+   op run -- uv run python src/host_bridge.py --config config.yaml &
    curl http://127.0.0.1:8081/healthz   # confirm it's up before continuing
    ```
 
