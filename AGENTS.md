@@ -8,14 +8,12 @@ A personal automation pipeline that turns media into an Obsidian note: it gets a
 
 **Requires an Apple Silicon Mac** for the transcription/summarization backend (`host_bridge.py`) — Parakeet needs MLX (Metal/Neural Engine, no Linux/Windows/Intel-Mac support), and the Claude CLI's subscription OAuth is tied to this Mac's keychain/session. Everything else (`pipeline.py`, `fetch_playlist.py`, `server.py`) can run natively OR in Docker containers — see "Two deployment modes" below. The `systemd/` unit files predate the MLX requirement and assume a Linux deployment; they're stale until ported to `launchd`.
 
-Five entry points, all in `youtube-obsidian-pipeline/`:
+Five entry points, all at the repo root:
 - `fetch_playlist.py` — polls a private YouTube playlist for new videos (scheduled via cron, or `--loop` in a container), then calls into `pipeline.py` per video.
 - `pipeline.py` — processes one input at a time (local file, YouTube URL, or any other link yt-dlp can handle); runnable standalone via `--input`, or imported as a library by `fetch_playlist.py`/`server.py`. Has no MLX/parakeet or claude-CLI dependency itself — talks to `host_bridge.py` over HTTP for both (see `bridge_client.py`), which is what makes it containerizable.
 - `server.py` — optional webhook mode: a stdlib-only HTTP server exposing `POST /process` behind a Cloudflare Tunnel (`cloudflared`, see `docker/`). Requests are auth-token-gated, queued, and processed one at a time by a background worker thread calling `process_input()`.
 - `host_bridge.py` — **must run natively on the Mac** (not in Docker). Exposes transcription (Parakeet/MLX, via `transcribe_backend.py`) and summarization/tagging (Claude CLI, via `core.py`) over HTTP on `127.0.0.1`, auth-token-gated. `pipeline.py`/`bridge_client.py` call this instead of doing either in-process — that split is what lets `pipeline.py`, `fetch_playlist.py`, and `server.py` run in a Linux container despite the pipeline's two host-tied dependencies.
 - `youtube_auth.py` — one-time OAuth setup, unrelated to the above.
-
-The root `main.py` referenced in git status does not exist yet.
 
 ## Two deployment modes
 
@@ -26,7 +24,6 @@ The root `main.py` referenced in git status does not exist yet.
 ## Running the pipeline
 
 ```bash
-cd youtube-obsidian-pipeline
 uv sync --extra mlx              # host: installs parakeet-mlx too (needed for host_bridge.py)
 uv sync                          # container/base: skips parakeet-mlx (no Linux wheels, and pipeline.py doesn't need it)
 op run -- uv run python host_bridge.py --config config.yaml          # must be running before anything below works

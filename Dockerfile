@@ -15,9 +15,9 @@
 # and this image never needs `op` installed at all.
 #
 # Build:
-#   docker build -t youtube-obsidian-pipeline -f Dockerfile ..
-# (build context is the repo's youtube-obsidian-pipeline/ directory -
-#  see docker-compose.yml, which sets `context: ..` from docker/)
+#   docker build -t youtube-obsidian-pipeline -f Dockerfile .
+# (build context is the repo root - see docker-compose.yml, which sets
+#  `context: ..` from docker/)
 
 FROM python:3.11-slim
 
@@ -45,8 +45,14 @@ ENV PATH="/app/.venv/bin:${PATH}"
 # paths must be writable by this UID/GID (configurable at build time).
 ARG PIPELINE_UID=1000
 ARG PIPELINE_GID=1000
+# Pre-create the pipeline-runtime mount point so it's owned by the pipeline
+# user in the image - Docker copies a named volume's initial ownership from
+# whatever's already at the mount point when it's first populated, and
+# since this path is otherwise never created before that first mount, it
+# would default to root:root (and the app can't write its lock file there).
 RUN groupadd --gid "$PIPELINE_GID" pipeline \
     && useradd --uid "$PIPELINE_UID" --gid pipeline --no-create-home pipeline \
+    && mkdir -p /app/.pipeline-runtime \
     && chown -R pipeline:pipeline /app
 USER pipeline
 

@@ -2,17 +2,17 @@
 .idea/
 
 # Pipeline secrets and runtime files
-youtube-obsidian-pipeline/.env
-youtube-obsidian-pipeline/config.yaml
-youtube-obsidian-pipeline/client_secret.json
-youtube-obsidian-pipeline/token.json
-youtube-obsidian-pipeline/state.json
-youtube-obsidian-pipeline/repos/
-youtube-obsidian-pipeline/pipeline.log
-youtube-obsidian-pipeline/server.log
-youtube-obsidian-pipeline/host_bridge.log
-youtube-obsidian-pipeline/.host_bridge.pid
-youtube-obsidian-pipeline/.pipeline-runtime/
+/.env
+/config.yaml
+/client_secret.json
+/token.json
+/state.json
+/repos/
+/pipeline.log
+/server.log
+/host_bridge.log
+/.host_bridge.pid
+/.pipeline-runtime/
 
 # Python
 __pycache__/

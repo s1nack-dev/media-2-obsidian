@@ -5,5 +5,5 @@ severity:
 scan:
   skip-dirs:
     - .git
-    - youtube-obsidian-pipeline/.venv
+    - .venv
 
