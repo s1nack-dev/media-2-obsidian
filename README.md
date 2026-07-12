@@ -6,8 +6,9 @@ Two ways to use this:
   playlist. Run on a schedule (cron/systemd) on your own server, it picks
   up new videos automatically.
 - **One-off mode** (`pipeline.py --input ...`): manually process a single
-  local video/audio file, a YouTube URL, or pretty much any other link
-  (podcast page, Vimeo, direct `.mp4`/`.mp3` link, etc.).
+  local video/audio file, a YouTube URL, a Spotify podcast episode, or
+  pretty much any other link (podcast page, Vimeo, direct `.mp4`/`.mp3`
+  link, etc.).
 
 Either way, the pipeline gets a transcript (existing subtitles/captions if
 available, otherwise downloads audio and transcribes it locally with
@@ -223,6 +224,12 @@ Edit `config.yaml`:
   running on the Mac). If you plan to run containerized (step 9 below), use
   `http://host.docker.internal:8081` instead. The example config defaults to
   the containerized value.
+- `spotify.client_id_op_ref` / `spotify.client_secret_op_ref` — optional,
+  only needed to resolve Spotify episode/show names via the official Web
+  API instead of scraping the public episode page. Create an app at
+  https://developer.spotify.com/dashboard for a client id/secret (metadata
+  scopes only — this pipeline never requests streaming access). Leave both
+  blank to skip this entirely.
 - Everything else has sane defaults.
 
 Note: the first time transcription actually runs for a given
@@ -495,6 +502,26 @@ they were added to the playlist.
   enclosure URL for that episode, then transcribes it directly (no video
   ever downloaded). If that lookup fails for any reason, it falls back to
   the normal generic-link handling.
+- **Spotify podcast episodes** (e.g. `https://open.spotify.com/episode/...`)
+  are handled as a transcript-first integration, not a Spotify downloader —
+  Spotify's Web API explicitly prohibits downloading Spotify-streamed
+  content, and doesn't expose episode transcripts or a show's RSS feed URL
+  either way. Instead: the episode's title/show name is resolved via the
+  official Spotify Web API (if `spotify.client_id_op_ref`/
+  `client_secret_op_ref` are configured in `config.yaml` — metadata only,
+  no streaming scopes) or, with no credentials configured, by reading the
+  public episode page's title/description. From the show name, the
+  pipeline looks up the podcast's real RSS feed via Apple's free iTunes
+  Search API and finds the matching episode by title. If that feed
+  publishes a Podcasting 2.0 `<podcast:transcript>` link (SRT, VTT, JSON, or
+  plain text), that's used directly — no audio download needed. Otherwise
+  it falls back to the feed's own `<enclosure>` audio URL (the podcast's
+  original file, never Spotify's stream) and transcribes it locally with
+  Parakeet, same as everything else. Only podcast episodes are supported —
+  Spotify-exclusive/private episodes, shows, and music tracks are reported
+  as unsupported rather than attempted. Spotify developer credentials are
+  entirely optional; without them, Spotify episodes still work as long as
+  the episode page and the show's RSS feed are public.
 - Very long transcripts are truncated to ~150k characters before
   summarization to stay within a safe prompt size; this covers several
   hours of typical speech.

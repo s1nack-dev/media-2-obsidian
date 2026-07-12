@@ -2,15 +2,35 @@
 # Do NOT commit config.yaml to git (it can contain tokens).
 
 youtube:
-  # Used by fetch_playlist.py for playlist polling. subtitle_languages is
-  # also used by pipeline.py for any yt-dlp-based subtitle download
-  # (YouTube videos and other sites yt-dlp can extract captions from).
+  # Used by fetch_playlist.py for playlist polling.
   playlist_id: "PLU_BTwYWjQm8"   # the private playlist you add videos to
   client_id_op_ref: "op://vault/item/client_id"        # 1Password field reference
   client_secret_op_ref: "op://vault/item/client_secret"  # 1Password field reference
   token_file: "token.json"                     # created by youtube_auth.py on first run
-  # language preference order for subtitle download, first available wins
+  # Legacy alias for media.subtitle_languages below - pipeline.py still
+  # reads this if media.subtitle_languages isn't set, so existing
+  # config.yaml files keep working unchanged. Prefer media.subtitle_languages
+  # in new configs.
   subtitle_languages: ["en"]
+
+media:
+  # Language preference order for yt-dlp subtitle download, first available
+  # wins. Source-neutral: used for YouTube, generic yt-dlp-supported links,
+  # and Spotify's RSS-audio fallback - anywhere pipeline.py calls yt-dlp for
+  # captions. Falls back to youtube.subtitle_languages above if this key is
+  # absent.
+  subtitle_languages: ["en"]
+
+spotify:
+  # Optional: enables resolving Spotify episode/show names via the official
+  # Spotify Web API (client-credentials flow - metadata only, this app never
+  # requests user-data or streaming scopes and never touches Spotify audio).
+  # Leave both blank to skip the API entirely - pipeline.py falls back to
+  # scraping the public episode page's title/description instead, which
+  # works without any Spotify developer account.
+  # Create an app at https://developer.spotify.com/dashboard to get these.
+  client_id_op_ref: ""
+  client_secret_op_ref: ""
 
 transcription:
   # Local speech-to-text fallback (Parakeet via MLX), used whenever no

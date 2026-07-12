@@ -7,6 +7,7 @@ summarization/tagging lives in claude_client.py.
 
 import contextlib
 import fcntl
+import http.client
 import ipaddress
 import json
 import logging
@@ -21,7 +22,7 @@ import urllib.request
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import yaml
 
@@ -337,21 +338,137 @@ def resolve_and_validate_url(url: str) -> tuple[str, str]:
     return ip_str, hostname
 
 
+_DEFAULT_FETCH_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def open_pinned(
+    url: str,
+    timeout: int,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: bytes | None = None,
+) -> tuple:
+    """
+    Validate url, resolve it to an approved public IP, and open a connection
+    pinned to that IP (correct Host header preserved) without following
+    redirects.
+
+    Parameters:
+        url (str): URL to request.
+        timeout (int): Connection/read timeout in seconds.
+        method (str): HTTP method.
+        headers (dict | None): Extra headers, merged over the default
+            User-Agent (never overrides the pinned Host header).
+        body (bytes | None): Optional request body (e.g. for POST).
+
+    Returns:
+        tuple: (response, hostname) - response is the open HTTPResponse.
+    """
+    validated_ip, hostname = resolve_and_validate_url(url)
+
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    host_header = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    target = parsed.path or "/"
+    if parsed.query:
+        target += f"?{parsed.query}"
+
+    if parsed.scheme == "https":
+
+        class PinnedHTTPSConnection(http.client.HTTPSConnection):
+            def connect(self):
+                sock = socket.create_connection((validated_ip, port), self.timeout)
+                self.sock = self._context.wrap_socket(sock, server_hostname=hostname)
+
+        conn = PinnedHTTPSConnection(
+            hostname, port, timeout=timeout, context=ssl.create_default_context()
+        )
+    else:
+        conn = http.client.HTTPConnection(validated_ip, port, timeout=timeout)
+
+    req_headers = {**_DEFAULT_FETCH_HEADERS, **(headers or {}), "Host": host_header}
+    conn.request(method, target, body=body, headers=req_headers)
+    return conn.getresponse(), hostname
+
+
+def safe_fetch(
+    url: str,
+    method: str = "GET",
+    headers: dict | None = None,
+    body: bytes | None = None,
+    timeout: int = 30,
+    max_redirects: int = 5,
+) -> tuple[int, dict[str, str], bytes]:
+    """
+    SSRF-safe HTTP request for small text/JSON payloads (RSS feeds, iTunes
+    Search API, Spotify Web API): pins the resolved IP via open_pinned() and
+    revalidates every redirect hop before following it, closing the
+    DNS-rebinding TOCTOU gap. Response body is capped at MAX_MEDIA_BYTES.
+
+    Unlike the large-media-file download path (see pipeline.py's
+    download_direct_file/_download_with_redirect_validation, which streams
+    straight to disk), this reads the full body into memory and returns the
+    status code so callers can branch on 401/403/404 themselves instead of
+    treating every non-2xx response as fatal.
+
+    Returns:
+        tuple[int, dict[str, str], bytes]: (status, response headers, body).
+
+    Raises:
+        ValueError: If a redirect is malformed, the redirect chain exceeds
+            max_redirects, or the body exceeds MAX_MEDIA_BYTES.
+    """
+    current_url = url
+    current_method = method
+    current_body = body
+
+    for _ in range(max_redirects + 1):
+        resp, _hostname = open_pinned(
+            current_url,
+            timeout,
+            method=current_method,
+            headers=headers,
+            body=current_body,
+        )
+        if resp.status in (301, 302, 303, 307, 308):
+            with resp:
+                location = resp.getheader("Location")
+            if not location:
+                raise ValueError(
+                    f"Redirect response {resp.status} without Location header"
+                )
+            current_url = urljoin(current_url, location)
+            if resp.status == 303:
+                current_method, current_body = "GET", None
+            continue
+
+        resp_headers = dict(resp.getheaders())
+        downloaded = bytearray()
+        with resp:
+            while chunk := resp.read(64 * 1024):
+                downloaded.extend(chunk)
+                if len(downloaded) > MAX_MEDIA_BYTES:
+                    raise ValueError(f"Response exceeds {MAX_MEDIA_BYTES} byte limit")
+        return resp.status, resp_headers, bytes(downloaded)
+
+    raise ValueError(f"Too many redirects (>{max_redirects}) when fetching {url}")
+
+
 # --------------------------------------------------------------------------
 # Transcript text helpers
 # --------------------------------------------------------------------------
 
 
-def srt_to_plain_text(srt_path: Path) -> str:
-    """Convert an SRT subtitle file into deduplicated plain text.
+def srt_text_to_plain_text(srt_text: str) -> str:
+    """Convert in-memory SRT subtitle text into deduplicated plain text.
 
     Parameters:
-        srt_path (Path): Path to the SRT subtitle file.
+        srt_text (str): SRT-formatted subtitle content.
 
     Returns:
         str: Subtitle text with indices, timestamps, blank lines, and consecutive duplicate lines removed.
     """
-    lines = srt_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines = srt_text.splitlines()
     text_lines = []
     for line in lines:
         line = line.strip()
@@ -368,6 +485,18 @@ def srt_to_plain_text(srt_path: Path) -> str:
         if not deduped or deduped[-1] != line:
             deduped.append(line)
     return " ".join(deduped)
+
+
+def srt_to_plain_text(srt_path: Path) -> str:
+    """Convert an SRT subtitle file into deduplicated plain text.
+
+    Parameters:
+        srt_path (Path): Path to the SRT subtitle file.
+
+    Returns:
+        str: Subtitle text with indices, timestamps, blank lines, and consecutive duplicate lines removed.
+    """
+    return srt_text_to_plain_text(srt_path.read_text(encoding="utf-8", errors="ignore"))
 
 
 # --------------------------------------------------------------------------
@@ -556,6 +685,7 @@ def build_note(
     subtitle_github_url: str,
     summary: str,
     content_tags: list[str] | None = None,
+    extra_frontmatter: dict[str, str] | None = None,
 ) -> str:
     """
     Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
@@ -569,6 +699,11 @@ def build_note(
         subtitle_github_url (str): URL to the subtitles on GitHub.
         summary (str): Summary content for the note.
         content_tags (list[str] | None): Optional additional tags.
+        extra_frontmatter (dict[str, str] | None): Optional additional
+            provider-specific frontmatter fields (e.g. a podcast's show name
+            or RSS feed URL) rendered as extra `key: value` lines. Kept
+            generic rather than provider-specific so new sources don't
+            require changes here.
 
     Returns:
         str: Complete Obsidian note in Markdown format.
@@ -587,6 +722,9 @@ def build_note(
         lines.append(f"video_id: {video_id}")
     if published_at:
         lines.append(f"published_at: {published_at}")
+    for key, value in (extra_frontmatter or {}).items():
+        if value:
+            lines.append(f"{key}: {value}")
     lines += [
         f"processed_at: {today}",
         f"subtitles: {subtitle_github_url}",

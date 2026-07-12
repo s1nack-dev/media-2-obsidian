@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Media (local file / YouTube URL / generic link) -> transcript + AI summary
--> GitHub + Obsidian pipeline.
+Media (local file / YouTube URL / Spotify podcast episode / any other
+yt-dlp-supported link) -> transcript + AI summary -> GitHub + Obsidian
+pipeline.
 
 Processes ONE input at a time:
-  1. Figures out whether the input is a local file, a YouTube URL, or some
-     other link.
+  1. Figures out whether the input is a local file, a YouTube URL, a Spotify
+     podcast episode, or some other link.
   2. Gets a transcript: existing subtitles/captions if available (YouTube,
-     or any site yt-dlp can extract from), a sidecar .srt file (local
+     or any site yt-dlp can extract from), an RSS/Podcasting-2.0 transcript
+     link (Spotify episodes, via podcast_rss.py), a sidecar .srt file (local
      files), otherwise sends audio to host_bridge.py for transcription
      (Parakeet/MLX - can't run in this container, see bridge_client.py).
   3. Summarizes the transcript, also via host_bridge.py (claude -p, host
@@ -30,17 +32,15 @@ See README.md for full setup instructions.
 
 import argparse
 import html
-import http.client
 import logging
 import os
 import re
-import socket
-import ssl
 import subprocess
 import sys
 import tempfile
 import traceback
 import urllib.request
+from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -48,6 +48,8 @@ from urllib.parse import parse_qs, urlparse
 import defusedxml.ElementTree as ET
 
 import bridge_client
+import podcast_rss
+import spotify_client
 from core import (
     MAX_MEDIA_BYTES,
     YTDLP_TIMEOUT_SECONDS,
@@ -55,12 +57,12 @@ from core import (
     commit_and_push,
     ensure_repo,
     load_config,
-    resolve_and_validate_url,
     resolve_secret,
     slugify,
     srt_to_plain_text,
     validate_public_url,
 )
+from core import open_pinned as _open_pinned
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,7 +82,6 @@ DIRECT_MEDIA_EXTENSIONS = {
     ".m4a",
     ".flac",
 }
-_HTTP_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
 class PipelineError(Exception):
@@ -99,13 +100,15 @@ class NoTranscriptAvailableError(PipelineError):
 
 def detect_input_type(raw_input: str) -> str:
     """
-    Classifies an HTTP(S) URL as YouTube or a generic link.
+    Classifies an HTTP(S) URL as YouTube, a Spotify podcast episode, or a
+    generic link (any other yt-dlp-supported URL, including Overcast, which
+    is handled as a fallback within the generic-link path).
 
     Parameters:
         raw_input (str): HTTP(S) URL to classify.
 
     Returns:
-        str: Either `"youtube"` or `"generic_link"`.
+        str: `"youtube"`, `"spotify"`, or `"generic_link"`.
 
     Raises:
         ValueError: If the input is not a hosted HTTP(S) URL.
@@ -119,6 +122,12 @@ def detect_input_type(raw_input: str) -> str:
         host = parsed.hostname.lower()
         if YOUTUBE_HOST_RE.search(host):
             return "youtube"
+        # Only Spotify *episode* URLs get provider-specific handling - show
+        # pages and music tracks fall through to generic_link, where yt-dlp
+        # (which doesn't support Spotify) will simply fail to find anything,
+        # a clear enough "unsupported" outcome without special-casing them.
+        if spotify_client.is_spotify_episode_url(raw_input):
+            return "spotify"
         return "generic_link"
     raise ValueError(f"Input {raw_input!r} is not a valid hosted http(s) URL.")
 
@@ -151,6 +160,20 @@ def extract_youtube_video_id(url: str) -> str:
 # --------------------------------------------------------------------------
 # yt-dlp helpers
 # --------------------------------------------------------------------------
+
+
+def _subtitle_languages(cfg: dict) -> list[str]:
+    """
+    Preferred subtitle language codes, source-neutral.
+
+    Prefers cfg["media"]["subtitle_languages"] if present, otherwise falls
+    back to the legacy cfg["youtube"]["subtitle_languages"] so existing
+    config.yaml files keep working unchanged.
+    """
+    media_cfg = cfg.get("media") or {}
+    if "subtitle_languages" in media_cfg:
+        return media_cfg["subtitle_languages"]
+    return cfg["youtube"]["subtitle_languages"]
 
 
 def _ytdlp_download_subs(
@@ -325,41 +348,6 @@ def _sanitize_filename(raw_filename: str) -> str:
 
     # If sanitization left nothing useful, use default
     return sanitized if sanitized else "download"
-
-
-def _open_pinned(url: str, timeout: int) -> tuple:
-    """
-    Validate url, resolve it to an approved public IP, and open a connection
-    pinned to that IP (correct Host header preserved) without following
-    redirects.
-
-    Returns:
-        tuple: (response, hostname) - response is the open HTTPResponse.
-    """
-    validated_ip, hostname = resolve_and_validate_url(url)
-
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    host_header = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
-    target = parsed.path or "/"
-    if parsed.query:
-        target += f"?{parsed.query}"
-
-    if parsed.scheme == "https":
-
-        class PinnedHTTPSConnection(http.client.HTTPSConnection):
-            def connect(self):
-                sock = socket.create_connection((validated_ip, port), self.timeout)
-                self.sock = self._context.wrap_socket(sock, server_hostname=hostname)
-
-        conn = PinnedHTTPSConnection(
-            hostname, port, timeout=timeout, context=ssl.create_default_context()
-        )
-    else:
-        conn = http.client.HTTPConnection(validated_ip, port, timeout=timeout)
-
-    conn.request("GET", target, headers={**_HTTP_HEADERS, "Host": host_header})
-    return conn.getresponse(), hostname
 
 
 def _download_with_redirect_validation(
@@ -574,6 +562,257 @@ def find_sidecar_subtitle(local_path: Path) -> Path | None:
 
 
 # --------------------------------------------------------------------------
+# Provider-neutral resolution
+#
+# Each _resolve_* function below handles exactly one source_type and returns
+# a ProviderResolution - process_input() itself no longer has any
+# source-specific branching beyond picking which one to call, so a future
+# source only needs a new _resolve_* function plus one dispatch line.
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class ProviderResolution:
+    """Normalized result of resolving one input to a transcript.
+
+    transcript_ext defaults to "srt" (every existing source produces real
+    SRT); an RSS-sourced plain-text transcript (no timing info available)
+    is the one case that overrides it to "txt".
+    """
+
+    title: str
+    source_url: str | None = None
+    video_id: str | None = None
+    raw_transcript_body: str | None = None
+    transcript_text: str | None = None
+    transcript_ext: str = "srt"
+    lang: str | None = None
+    extra_frontmatter: dict[str, str] | None = None
+
+
+def _resolve_local_file(
+    local_path: Path,
+    item_hint: dict,
+    bridge_url: str,
+    bridge_token: str,
+    model_id: str,
+) -> ProviderResolution:
+    title = item_hint.get("title") or local_path.stem
+
+    sidecar = find_sidecar_subtitle(local_path)
+    if sidecar is not None:
+        raw = sidecar.read_text(encoding="utf-8", errors="ignore")
+        text = srt_to_plain_text(sidecar)
+        lang = "sidecar"
+    else:
+        raw, text = bridge_client.transcribe_audio(
+            local_path, model_id, bridge_url, bridge_token
+        )
+        lang = "parakeet"
+
+    return ProviderResolution(
+        title=title, raw_transcript_body=raw, transcript_text=text, lang=lang
+    )
+
+
+def _resolve_youtube(
+    raw_input: str,
+    item_hint: dict,
+    cfg: dict,
+    workdir: Path,
+    bridge_url: str,
+    bridge_token: str,
+    model_id: str,
+) -> ProviderResolution:
+    video_id = item_hint.get("video_id") or extract_youtube_video_id(raw_input)
+    source_url = f"https://www.youtube.com/watch?v={video_id}"
+    title = item_hint.get("title") or fetch_title_via_ytdlp(source_url) or video_id
+
+    raw = text = lang = None
+    subs_result = download_subtitles(video_id, _subtitle_languages(cfg), workdir)
+    if subs_result is not None:
+        srt_path, lang = subs_result
+        raw = srt_path.read_text(encoding="utf-8", errors="ignore")
+        text = srt_to_plain_text(srt_path)
+    else:
+        # No captions at all - fall back to downloading audio and
+        # transcribing it locally instead of giving up.
+        audio_path = download_audio_via_ytdlp(source_url, workdir)
+        if audio_path is not None:
+            raw, text = bridge_client.transcribe_audio(
+                audio_path, model_id, bridge_url, bridge_token
+            )
+            lang = "parakeet"
+
+    return ProviderResolution(
+        title=title,
+        source_url=source_url,
+        video_id=video_id,
+        raw_transcript_body=raw,
+        transcript_text=text,
+        lang=lang,
+    )
+
+
+def _resolve_generic_link(
+    raw_input: str,
+    item_hint: dict,
+    cfg: dict,
+    workdir: Path,
+    bridge_url: str,
+    bridge_token: str,
+    model_id: str,
+) -> ProviderResolution:
+    """Any yt-dlp-supported URL that isn't YouTube or a Spotify episode.
+
+    Tries embedded/manual/automatic subtitles first (same as YouTube), then
+    falls back to downloading audio and transcribing it. Overcast is
+    special-cased only to resolve the page to its real RSS mp3 enclosure -
+    from there it goes through the exact same download-then-transcribe tail
+    as any other generic link.
+    """
+    source_url = raw_input
+    host = (urlparse(raw_input).hostname or "").lower()
+    title = item_hint.get("title")
+
+    overcast_resolved = (
+        resolve_overcast_episode(raw_input) if OVERCAST_HOST_RE.search(host) else None
+    )
+
+    raw = text = lang = None
+    if overcast_resolved is not None:
+        # Podcasts have no video component and no synced subtitles - go
+        # straight to the real mp3 enclosure and transcribe it.
+        resolved_title, mp3_url = overcast_resolved
+        if title is None:
+            title = resolved_title
+        media_path = download_direct_file(mp3_url, workdir)
+        raw, text = bridge_client.transcribe_audio(
+            media_path, model_id, bridge_url, bridge_token
+        )
+        lang = "parakeet"
+    else:
+        validate_public_url(raw_input)
+
+        if title is None:
+            title = fetch_title_via_ytdlp(raw_input)
+
+        subs_result = _ytdlp_download_subs(
+            raw_input, "transcript", _subtitle_languages(cfg), workdir
+        )
+        if subs_result is not None:
+            srt_path, lang = subs_result
+            raw = srt_path.read_text(encoding="utf-8", errors="ignore")
+            text = srt_to_plain_text(srt_path)
+        else:
+            media_path = (
+                download_direct_file(raw_input, workdir)
+                if is_direct_media_url(raw_input)
+                else download_audio_via_ytdlp(raw_input, workdir)
+            )
+            if media_path is not None:
+                raw, text = bridge_client.transcribe_audio(
+                    media_path, model_id, bridge_url, bridge_token
+                )
+                lang = "parakeet"
+                if title is None:
+                    title = media_path.stem
+
+    if title is None:
+        title = raw_input[:80]
+
+    return ProviderResolution(
+        title=title,
+        source_url=source_url,
+        raw_transcript_body=raw,
+        transcript_text=text,
+        lang=lang,
+    )
+
+
+def _resolve_spotify(
+    raw_input: str,
+    item_hint: dict,
+    cfg: dict,
+    workdir: Path,
+    bridge_url: str,
+    bridge_token: str,
+    model_id: str,
+) -> ProviderResolution:
+    """Spotify podcast episode: metadata via spotify_client.py, transcript
+    or audio via podcast_rss.py's RSS/Podcasting-2.0 discovery.
+
+    Never downloads Spotify-streamed audio - if RSS resolution can't find a
+    transcript OR the original enclosure, this returns with no transcript at
+    all and process_input()'s existing NoTranscriptAvailableError check
+    reports it, same as any other source that comes up empty.
+    """
+    title = item_hint.get("title")
+
+    metadata = spotify_client.resolve_episode_metadata(raw_input, cfg)
+    if metadata is None:
+        log.warning(
+            "Spotify episode %s is unsupported, private, or unavailable "
+            "(no metadata via API or page scrape).",
+            raw_input,
+        )
+        return ProviderResolution(title=title or raw_input[:80], source_url=raw_input)
+
+    if title is None:
+        title = metadata.get("title") or raw_input[:80]
+    show_name = metadata.get("show_name")
+
+    rss_result = (
+        podcast_rss.resolve_episode_from_rss(show_name, title) if show_name else None
+    )
+    if rss_result is None:
+        log.warning(
+            "Could not locate an RSS feed/episode match for Spotify show %r "
+            "episode %r.",
+            show_name,
+            title,
+        )
+        return ProviderResolution(title=title, source_url=raw_input)
+
+    extra_frontmatter = {"podcast_feed_url": rss_result["feed_url"]}
+    transcript = rss_result["transcript"]
+    if transcript is not None:
+        ext, raw, text = transcript
+        return ProviderResolution(
+            title=title,
+            source_url=raw_input,
+            raw_transcript_body=raw,
+            transcript_text=text,
+            transcript_ext=ext,
+            lang="rss",
+            extra_frontmatter=extra_frontmatter,
+        )
+
+    enclosure_url = rss_result["enclosure_url"]
+    if enclosure_url is None:
+        log.warning("No transcript or audio enclosure found in RSS feed for %r.", title)
+        return ProviderResolution(
+            title=title, source_url=raw_input, extra_frontmatter=extra_frontmatter
+        )
+
+    # No published transcript - fall back to the podcast's own original RSS
+    # audio (not Spotify's stream) through the same local Parakeet path
+    # every other source uses.
+    media_path = download_direct_file(enclosure_url, workdir)
+    raw, text = bridge_client.transcribe_audio(
+        media_path, model_id, bridge_url, bridge_token
+    )
+    return ProviderResolution(
+        title=title,
+        source_url=raw_input,
+        raw_transcript_body=raw,
+        transcript_text=text,
+        lang="parakeet",
+        extra_frontmatter=extra_frontmatter,
+    )
+
+
+# --------------------------------------------------------------------------
 # Generalized single-input processor
 # --------------------------------------------------------------------------
 
@@ -627,120 +866,37 @@ def process_input(
             "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
         )
 
-    title = item_hint.get("title")
     published_at = item_hint.get("published_at")
-    video_id = None
-    source_url = None
-    raw_srt_body = None
-    transcript_text = None
-    lang = None
 
     with tempfile.TemporaryDirectory(prefix="pipeline-") as tmp:
         workdir = Path(tmp)
 
         if source_type == "local_file":
             assert local_path is not None
-            if title is None:
-                title = local_path.stem
-
-            sidecar = find_sidecar_subtitle(local_path)
-            if sidecar is not None:
-                raw_srt_body = sidecar.read_text(encoding="utf-8", errors="ignore")
-                transcript_text = srt_to_plain_text(sidecar)
-                lang = "sidecar"
-            else:
-                raw_srt_body, transcript_text = bridge_client.transcribe_audio(
-                    local_path,
-                    model_id,
-                    bridge_url,
-                    bridge_token,
-                )
-                lang = "parakeet"
-
+            resolution = _resolve_local_file(
+                local_path, item_hint, bridge_url, bridge_token, model_id
+            )
         elif source_type == "youtube":
-            video_id = item_hint.get("video_id") or extract_youtube_video_id(raw_input)
-            source_url = f"https://www.youtube.com/watch?v={video_id}"
-            if title is None:
-                title = fetch_title_via_ytdlp(source_url) or video_id
-
-            subs_result = download_subtitles(
-                video_id, cfg["youtube"]["subtitle_languages"], workdir
+            resolution = _resolve_youtube(
+                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
             )
-            if subs_result is not None:
-                srt_path, lang = subs_result
-                raw_srt_body = srt_path.read_text(encoding="utf-8", errors="ignore")
-                transcript_text = srt_to_plain_text(srt_path)
-            else:
-                # No captions at all - fall back to downloading audio and
-                # transcribing it locally instead of giving up.
-                audio_path = download_audio_via_ytdlp(source_url, workdir)
-                if audio_path is not None:
-                    raw_srt_body, transcript_text = bridge_client.transcribe_audio(
-                        audio_path,
-                        model_id,
-                        bridge_url,
-                        bridge_token,
-                    )
-                    lang = "parakeet"
-
+        elif source_type == "spotify":
+            resolution = _resolve_spotify(
+                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+            )
         else:  # generic_link
-            source_url = raw_input
-            host = (urlparse(raw_input).hostname or "").lower()
-
-            overcast_resolved = (
-                resolve_overcast_episode(raw_input)
-                if OVERCAST_HOST_RE.search(host)
-                else None
+            resolution = _resolve_generic_link(
+                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
             )
 
-            if overcast_resolved is not None:
-                # Podcasts have no video component and no synced subtitles -
-                # go straight to the real mp3 enclosure and transcribe it.
-                resolved_title, mp3_url = overcast_resolved
-                if title is None:
-                    title = resolved_title
-                media_path = download_direct_file(mp3_url, workdir)
-                raw_srt_body, transcript_text = bridge_client.transcribe_audio(
-                    media_path,
-                    model_id,
-                    bridge_url,
-                    bridge_token,
-                )
-                lang = "parakeet"
-            else:
-                validate_public_url(raw_input)
-
-                if title is None:
-                    title = fetch_title_via_ytdlp(raw_input)
-
-                subs_result = _ytdlp_download_subs(
-                    raw_input,
-                    "transcript",
-                    cfg["youtube"]["subtitle_languages"],
-                    workdir,
-                )
-                if subs_result is not None:
-                    srt_path, lang = subs_result
-                    raw_srt_body = srt_path.read_text(encoding="utf-8", errors="ignore")
-                    transcript_text = srt_to_plain_text(srt_path)
-                else:
-                    if is_direct_media_url(raw_input):
-                        media_path = download_direct_file(raw_input, workdir)
-                    else:
-                        media_path = download_audio_via_ytdlp(raw_input, workdir)
-                    if media_path is not None:
-                        raw_srt_body, transcript_text = bridge_client.transcribe_audio(
-                            media_path,
-                            model_id,
-                            bridge_url,
-                            bridge_token,
-                        )
-                        lang = "parakeet"
-                        if title is None:
-                            title = media_path.stem
-
-            if title is None:
-                title = raw_input[:80]
+        title = resolution.title
+        source_url = resolution.source_url
+        video_id = resolution.video_id
+        raw_srt_body = resolution.raw_transcript_body
+        transcript_text = resolution.transcript_text
+        transcript_ext = resolution.transcript_ext
+        lang = resolution.lang
+        extra_frontmatter = resolution.extra_frontmatter
 
         if raw_srt_body is None or transcript_text is None:
             raise NoTranscriptAvailableError(
@@ -779,7 +935,7 @@ def process_input(
     slug = slugify(title)
     subs_dir = subs_repo / cfg["github"]["subtitles_dir_in_repo"]
     subs_dir.mkdir(parents=True, exist_ok=True)
-    subtitle_path = subs_dir / f"{slug}.{lang}.srt"
+    subtitle_path = subs_dir / f"{slug}.{lang}.{transcript_ext}"
     subtitle_path.write_text(final_srt_text, encoding="utf-8")
 
     commit_and_push(
@@ -813,6 +969,7 @@ def process_input(
             subtitle_github_url,
             summary,
             content_tags,
+            extra_frontmatter=extra_frontmatter,
         ),
         encoding="utf-8",
     )
@@ -842,7 +999,12 @@ def process_input(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input", required=True, help="Local file path, YouTube URL, or generic link."
+        "--input",
+        required=True,
+        help=(
+            "Local file path, YouTube URL, Spotify podcast episode URL, or "
+            "any other yt-dlp-supported link."
+        ),
     )
     parser.add_argument("--config", default="config.yaml")
     args = parser.parse_args()

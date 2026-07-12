@@ -8,6 +8,11 @@ import pipeline
     [
         ("https://www.youtube.com/watch?v=abc", "youtube"),
         ("https://example.com/a", "generic_link"),
+        ("https://vimeo.com/12345", "generic_link"),
+        ("https://overcast.fm/+abc", "generic_link"),
+        ("https://open.spotify.com/episode/abc123", "spotify"),
+        ("https://open.spotify.com/show/abc123", "generic_link"),
+        ("https://x.test/a.mp3", "generic_link"),
     ],
 )
 def test_detect_input_type_urls(value, expected):
@@ -428,3 +433,245 @@ def test_process_input_rejects_directory_path(tmp_path):
     cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}}
     with pytest.raises(ValueError, match="not an existing file"):
         pipeline.process_input(directory, cfg)
+
+
+def test_subtitle_languages_prefers_media_over_youtube_legacy():
+    cfg = {
+        "media": {"subtitle_languages": ["de"]},
+        "youtube": {"subtitle_languages": ["en"]},
+    }
+    assert pipeline._subtitle_languages(cfg) == ["de"]
+
+
+def test_subtitle_languages_falls_back_to_youtube_legacy():
+    cfg = {"youtube": {"subtitle_languages": ["en"]}}
+    assert pipeline._subtitle_languages(cfg) == ["en"]
+
+
+def _spotify_cfg():
+    return {
+        "bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"},
+        "youtube": {"subtitle_languages": ["en"]},
+        "transcription": {"model": "parakeet"},
+    }
+
+
+def test_process_input_spotify_rss_transcript_bypasses_audio_download(
+    tmp_path, monkeypatch
+):
+    subs, vault = tmp_path / "subs", tmp_path / "vault"
+    cfg = _spotify_cfg()
+    cfg["github"] = {
+        "subtitles_repo_url": "https://github.com/me/subs.git",
+        "subtitles_repo_path": str(subs),
+        "subtitles_branch": "main",
+        "subtitles_dir_in_repo": "transcripts",
+        "vault_repo_url": "https://github.com/me/vault.git",
+        "vault_repo_path": str(vault),
+        "vault_branch": "main",
+        "vault_notes_dir": "notes",
+        "commit_author_name": "Test",
+        "commit_author_email": "test@example.com",
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "ensure_repo",
+        lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
+    )
+    monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
+    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(
+        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+    )
+    monkeypatch.setattr(
+        pipeline.spotify_client,
+        "resolve_episode_metadata",
+        lambda url, cfg: {"title": "Episode One", "show_name": "My Show"},
+    )
+
+    def fake_resolve_rss(show_name, title):
+        assert show_name == "My Show"
+        return {
+            "feed_url": "https://feed.example/rss",
+            "transcript": ("srt", "1\n...\nHi\n", "Hi"),
+            "enclosure_url": "https://cdn.example/e1.mp3",
+        }
+
+    monkeypatch.setattr(
+        pipeline.podcast_rss, "resolve_episode_from_rss", fake_resolve_rss
+    )
+
+    def fail_transcribe(*args):
+        raise AssertionError(
+            "should not download/transcribe audio when RSS transcript exists"
+        )
+
+    monkeypatch.setattr(pipeline.bridge_client, "transcribe_audio", fail_transcribe)
+
+    result = pipeline.process_input(
+        "https://open.spotify.com/episode/abc123",
+        cfg,
+        github_token="token",
+        bridge_token="bridge",
+    )
+    assert result["title"] == "Episode One"
+    assert result["subtitle_path"].suffix == ".srt"
+    note_text = result["note_path"].read_text()
+    assert "podcast_feed_url: https://feed.example/rss" in note_text
+
+
+def test_process_input_spotify_no_transcript_falls_back_to_parakeet(
+    tmp_path, monkeypatch
+):
+    subs, vault = tmp_path / "subs", tmp_path / "vault"
+    cfg = _spotify_cfg()
+    cfg["github"] = {
+        "subtitles_repo_url": "https://github.com/me/subs.git",
+        "subtitles_repo_path": str(subs),
+        "subtitles_branch": "main",
+        "subtitles_dir_in_repo": "transcripts",
+        "vault_repo_url": "https://github.com/me/vault.git",
+        "vault_repo_path": str(vault),
+        "vault_branch": "main",
+        "vault_notes_dir": "notes",
+        "commit_author_name": "Test",
+        "commit_author_email": "test@example.com",
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "ensure_repo",
+        lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
+    )
+    monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
+    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(
+        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+    )
+    monkeypatch.setattr(
+        pipeline.spotify_client,
+        "resolve_episode_metadata",
+        lambda url, cfg: {"title": "Episode One", "show_name": "My Show"},
+    )
+    monkeypatch.setattr(
+        pipeline.podcast_rss,
+        "resolve_episode_from_rss",
+        lambda show_name, title: {
+            "feed_url": "https://feed.example/rss",
+            "transcript": None,
+            "enclosure_url": "https://cdn.example/e1.mp3",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline, "download_direct_file", lambda url, workdir: Path(workdir) / "e1.mp3"
+    )
+    monkeypatch.setattr(
+        pipeline.bridge_client,
+        "transcribe_audio",
+        lambda *args: ("1\n...\nHi\n", "Hi"),
+    )
+
+    result = pipeline.process_input(
+        "https://open.spotify.com/episode/abc123",
+        cfg,
+        github_token="token",
+        bridge_token="bridge",
+    )
+    assert result["title"] == "Episode One"
+
+
+def test_process_input_spotify_unsupported_episode_raises_no_transcript(
+    tmp_path, monkeypatch
+):
+    cfg = _spotify_cfg()
+    monkeypatch.setattr(
+        pipeline.spotify_client, "resolve_episode_metadata", lambda url, cfg: None
+    )
+    with pytest.raises(pipeline.NoTranscriptAvailableError):
+        pipeline.process_input(
+            "https://open.spotify.com/episode/private123",
+            cfg,
+            github_token="t",
+            bridge_token="b",
+        )
+
+
+def test_process_input_spotify_never_calls_download_audio_via_ytdlp(
+    tmp_path, monkeypatch
+):
+    """Spotify-streamed audio must never be fetched - only the original RSS
+    enclosure (via download_direct_file) or a published transcript."""
+    cfg = _spotify_cfg()
+    monkeypatch.setattr(
+        pipeline.spotify_client,
+        "resolve_episode_metadata",
+        lambda url, cfg: {"title": "Episode One", "show_name": "My Show"},
+    )
+    monkeypatch.setattr(
+        pipeline.podcast_rss,
+        "resolve_episode_from_rss",
+        lambda show_name, title: {
+            "feed_url": "https://feed.example/rss",
+            "transcript": None,
+            "enclosure_url": None,
+        },
+    )
+
+    def fail(*args):
+        raise AssertionError("must not call yt-dlp audio download for Spotify")
+
+    monkeypatch.setattr(pipeline, "download_audio_via_ytdlp", fail)
+    with pytest.raises(pipeline.NoTranscriptAvailableError):
+        pipeline.process_input(
+            "https://open.spotify.com/episode/abc123",
+            cfg,
+            github_token="t",
+            bridge_token="b",
+        )
+
+
+def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
+    """Regression: a non-YouTube yt-dlp-supported URL (e.g. Vimeo) still
+    resolves subtitles through the generic-link path unchanged."""
+    subs, vault = tmp_path / "subs", tmp_path / "vault"
+    cfg = {
+        "bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"},
+        "transcription": {},
+        "youtube": {"subtitle_languages": ["en"]},
+        "github": {
+            "subtitles_repo_url": "https://github.com/me/subs.git",
+            "subtitles_repo_path": str(subs),
+            "subtitles_branch": "main",
+            "subtitles_dir_in_repo": "transcripts",
+            "vault_repo_url": "https://github.com/me/vault.git",
+            "vault_repo_path": str(vault),
+            "vault_branch": "main",
+            "vault_notes_dir": "notes",
+            "commit_author_name": "Test",
+            "commit_author_email": "test@example.com",
+        },
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "ensure_repo",
+        lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
+    )
+    monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
+    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(
+        pipeline.bridge_client, "generate_tags", lambda *args: ["video"]
+    )
+    monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
+    monkeypatch.setattr(pipeline, "fetch_title_via_ytdlp", lambda url: "Vimeo Talk")
+
+    def fake_subs(url, out_basename, languages, workdir):
+        srt_path = Path(workdir) / f"{out_basename}.en.srt"
+        srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello vimeo\n")
+        return srt_path, "en"
+
+    monkeypatch.setattr(pipeline, "_ytdlp_download_subs", fake_subs)
+
+    result = pipeline.process_input(
+        "https://vimeo.com/12345", cfg, github_token="token", bridge_token="bridge"
+    )
+    assert result["title"] == "Vimeo Talk"
+    assert result["subtitle_path"].suffix == ".srt"
