@@ -122,8 +122,15 @@ op run -- uv run python youtube_auth.py --config config.yaml
 
 A browser window opens, asks you to log in and approve read-only access to
 your YouTube account, then writes `token.json`. Copy `token.json` to the
-server if you ran this step elsewhere. The refresh token inside it keeps
-working indefinitely — the pipeline refreshes it automatically on each run.
+server if you ran this step elsewhere.
+
+**Important:** Apps left in "Testing" status receive expiring refresh tokens
+for YouTube scopes (tokens stop working after seven days). To avoid weekly
+reauthorization, publish your OAuth consent screen to "Production" in the
+[Google Cloud Console](https://console.cloud.google.com) (**APIs & Services >
+OAuth consent screen > Publish App**). No verification is required for apps
+that only access your own data. If you keep the app in Testing, you'll need to
+rerun `youtube_auth.py` weekly to get a fresh token.
 
 ## 4. GitHub repos + token
 
@@ -197,10 +204,17 @@ uv sync --extra mlx   # creates .venv and installs yt-dlp, parakeet-mlx, google 
 cp config.example.yaml config.yaml
 ```
 
+Generate a random auth token for the bridge and store it in 1Password:
+```bash
+openssl rand -hex 32   # bridge.auth_token_op_ref - protects transcription/summarization endpoints
+```
+
 Edit `config.yaml`:
 - `youtube.playlist_id` — from step 2
 - `youtube.client_id_op_ref` / `youtube.client_secret_op_ref` — from step 1
 - `github.token_op_ref` — from step 4
+- `bridge.auth_token_op_ref` — the token you just generated, stored in 1Password
+  (e.g. `op://Private/youtube-2-obsidian/bridge auth token`)
 - `github.subtitles_repo_url` / `github.vault_repo_url` — your two repos
 - `github.vault_notes_dir` — subfolder inside the vault where notes land
 - `transcription.model` — the Hugging Face repo id for the Parakeet model;
@@ -220,6 +234,15 @@ transcription itself always runs fully locally regardless (no audio is
 ever sent anywhere).
 
 ## 7. Test it manually
+
+Start the bridge service first (required for both native and containerized deployments):
+```bash
+op run -- uv run python host_bridge.py --config config.yaml &
+```
+
+This starts `host_bridge.py` in the background. It must remain running for all
+pipeline operations (playlist polling, one-off processing, scheduled cron jobs).
+The bridge provides transcription and summarization services to the pipeline.
 
 Playlist mode:
 ```bash
