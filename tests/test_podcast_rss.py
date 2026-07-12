@@ -5,13 +5,73 @@ import podcast_rss
 
 def test_discover_feed_via_itunes_success(monkeypatch):
     payload = json.dumps(
-        {"results": [{"feedUrl": "https://feed.example/rss"}]}
+        {
+            "results": [
+                {"collectionName": "My Show", "feedUrl": "https://feed.example/rss"}
+            ]
+        }
     ).encode()
     monkeypatch.setattr(podcast_rss, "validate_public_url", lambda url: None)
     monkeypatch.setattr(
         podcast_rss, "safe_fetch", lambda url, timeout=15: (200, {}, payload)
     )
     assert podcast_rss.discover_feed_via_itunes("My Show") == "https://feed.example/rss"
+
+
+def test_discover_feed_via_itunes_ignores_higher_ranked_wrong_show(monkeypatch):
+    """Regression: iTunes's relevance ranking doesn't reliably put an exact
+    title match first (observed live: a search for "The AI Daily Brief:
+    Artificial Intelligence News and Analysis" ranked an unrelated "WSJ Tech
+    News Briefing" above the actual show). Must match by name, not position."""
+    payload = json.dumps(
+        {
+            "results": [
+                {
+                    "collectionName": "Unrelated Show",
+                    "feedUrl": "https://wrong.example/rss",
+                },
+                {"collectionName": "My Show", "feedUrl": "https://feed.example/rss"},
+            ]
+        }
+    ).encode()
+    monkeypatch.setattr(podcast_rss, "validate_public_url", lambda url: None)
+    monkeypatch.setattr(
+        podcast_rss, "safe_fetch", lambda url, timeout=15: (200, {}, payload)
+    )
+    assert podcast_rss.discover_feed_via_itunes("My Show") == "https://feed.example/rss"
+
+
+def test_discover_feed_via_itunes_falls_back_to_close_match(monkeypatch):
+    payload = json.dumps(
+        {
+            "results": [
+                {"collectionName": "My Show!", "feedUrl": "https://feed.example/rss"},
+            ]
+        }
+    ).encode()
+    monkeypatch.setattr(podcast_rss, "validate_public_url", lambda url: None)
+    monkeypatch.setattr(
+        podcast_rss, "safe_fetch", lambda url, timeout=15: (200, {}, payload)
+    )
+    assert podcast_rss.discover_feed_via_itunes("My Show") == "https://feed.example/rss"
+
+
+def test_discover_feed_via_itunes_no_close_match_returns_none(monkeypatch):
+    payload = json.dumps(
+        {
+            "results": [
+                {
+                    "collectionName": "Totally Different",
+                    "feedUrl": "https://wrong.example/rss",
+                },
+            ]
+        }
+    ).encode()
+    monkeypatch.setattr(podcast_rss, "validate_public_url", lambda url: None)
+    monkeypatch.setattr(
+        podcast_rss, "safe_fetch", lambda url, timeout=15: (200, {}, payload)
+    )
+    assert podcast_rss.discover_feed_via_itunes("My Show") is None
 
 
 def test_discover_feed_via_itunes_no_results(monkeypatch):

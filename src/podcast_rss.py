@@ -61,11 +61,12 @@ def discover_feed_via_itunes(show_name: str, timeout: int = 15) -> str | None:
 
     Returns:
         str | None: The feed URL of the best-matching show, or None if the
-        API call fails or returns no results.
+        API call fails, returns no results, or no result's name resembles
+        show_name closely enough to trust.
     """
     if not show_name:
         return None
-    url = f"{ITUNES_SEARCH_URL}?media=podcast&entity=podcast&limit=1&term={quote(show_name)}"
+    url = f"{ITUNES_SEARCH_URL}?media=podcast&entity=podcast&limit=10&term={quote(show_name)}"
     try:
         validate_public_url(url)
         status, _headers, body = safe_fetch(url, timeout=timeout)
@@ -78,7 +79,26 @@ def discover_feed_via_itunes(show_name: str, timeout: int = 15) -> str | None:
         results = payload.get("results") or []
         if not results:
             return None
-        return results[0].get("feedUrl")
+
+        # iTunes's relevance ranking does NOT reliably put an exact title
+        # match first - observed in practice: searching "The AI Daily
+        # Brief: Artificial Intelligence News and Analysis" ranked an
+        # unrelated "WSJ Tech News Briefing" above the actual show, which
+        # only appeared as the second result. Match by name explicitly
+        # instead of trusting results[0].
+        by_name = {r["collectionName"]: r for r in results if r.get("collectionName")}
+        match = by_name.get(show_name)
+        if match is None:
+            close = get_close_matches(show_name, by_name.keys(), n=1, cutoff=0.8)
+            match = by_name[close[0]] if close else None
+        if match is None:
+            log.warning(
+                "No iTunes result closely matches show %r (top hit was %r)",
+                show_name,
+                results[0].get("collectionName"),
+            )
+            return None
+        return match.get("feedUrl")
     except Exception as e:
         log.warning("iTunes feed discovery failed for %r: %s", show_name, e)
         return None
