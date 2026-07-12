@@ -223,6 +223,41 @@ def test_handler_rejects_local_file_and_ssrf(monkeypatch):
         assert f.responses == [400]
 
 
+def test_handler_rejects_hostless_http_urls(monkeypatch):
+    Handler = server.make_handler("secret")
+
+    class F:
+        def __init__(self, value):
+            body = ('{"input":"' + value + '"}').encode()
+            self.path = "/process"
+            self.rfile = BytesIO(body)
+            self.wfile = BytesIO()
+            self.headers = {
+                "Authorization": "Bearer secret",
+                "Content-Length": str(len(body)),
+            }
+            self.responses = []
+
+        def send_response(self, s):
+            self.responses.append(s)
+
+        def send_header(self, *a):
+            pass
+
+        def end_headers(self):
+            pass
+
+    for hostless_url in ["http:", "https:", "http:///tmp/file"]:
+        f = F(hostless_url)
+        h = object.__new__(Handler)
+        h.__dict__.update(f.__dict__)
+        h.send_response = f.send_response
+        h.send_header = f.send_header
+        h.end_headers = f.end_headers
+        h.do_POST()
+        assert f.responses == [400]
+
+
 def test_handler_queue_full(monkeypatch):
     import queue
 

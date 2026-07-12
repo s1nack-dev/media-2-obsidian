@@ -182,6 +182,11 @@ def make_handler(auth_token: str):
                     400, {"error": "only http(s) URLs are accepted over the network"}
                 )
                 return
+            if not parsed.hostname:
+                self._send_json(
+                    400, {"error": "HTTP(S) URL must have a hostname"}
+                )
+                return
 
             try:
                 input_type = detect_input_type(raw_input)
