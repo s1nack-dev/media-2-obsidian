@@ -247,6 +247,13 @@ def test_handler_rejects_hostless_http_urls(monkeypatch):
         def end_headers(self):
             pass
 
+    monkeypatch.setattr(
+        server,
+        "detect_input_type",
+        lambda value: (_ for _ in ()).throw(
+            AssertionError("detect_input_type should not be called for hostless URLs")
+        ),
+    )
     for hostless_url in ["http:", "https:", "http:///tmp/file"]:
         f = F(hostless_url)
         h = object.__new__(Handler)
