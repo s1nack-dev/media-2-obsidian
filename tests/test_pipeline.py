@@ -650,6 +650,64 @@ def test_process_input_spotify_never_calls_download_audio_via_ytdlp(
         )
 
 
+def test_resolve_spotify_uses_rss_pubdate_over_api_release_date(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.spotify_client,
+        "resolve_episode_metadata",
+        lambda url, cfg: {
+            "title": "Episode One",
+            "show_name": "My Show",
+            "release_date": "2020-01-01",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.podcast_rss,
+        "resolve_episode_from_rss",
+        lambda show_name, title: {
+            "feed_url": "https://feed.example/rss",
+            "transcript": None,
+            "transcript_url": None,
+            "enclosure_url": None,
+            "published_at": "2026-07-10",
+        },
+    )
+    resolution = pipeline._resolve_spotify(
+        "https://open.spotify.com/episode/abc123",
+        {},
+        {},
+        Path("/tmp"),
+        "http://bridge",
+        "tok",
+        "model",
+    )
+    assert resolution.published_at == "2026-07-10"
+
+
+def test_resolve_spotify_falls_back_to_api_release_date_when_no_rss(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.spotify_client,
+        "resolve_episode_metadata",
+        lambda url, cfg: {
+            "title": "Episode One",
+            "show_name": "My Show",
+            "release_date": "2020-01-01",
+        },
+    )
+    monkeypatch.setattr(
+        pipeline.podcast_rss, "resolve_episode_from_rss", lambda show_name, title: None
+    )
+    resolution = pipeline._resolve_spotify(
+        "https://open.spotify.com/episode/abc123",
+        {},
+        {},
+        Path("/tmp"),
+        "http://bridge",
+        "tok",
+        "model",
+    )
+    assert resolution.published_at == "2020-01-01"
+
+
 def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
     """Regression: a non-YouTube yt-dlp-supported URL (e.g. Vimeo) still
     resolves subtitles through the generic-link path unchanged."""
@@ -682,9 +740,14 @@ def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
         pipeline.bridge_client, "generate_tags", lambda *args: ["video"]
     )
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
-    monkeypatch.setattr(pipeline, "fetch_title_via_ytdlp", lambda url: "Vimeo Talk")
+    monkeypatch.setattr(
+        pipeline, "fetch_title_via_ytdlp", lambda url, **kwargs: "Vimeo Talk"
+    )
+    monkeypatch.setattr(
+        pipeline, "fetch_published_at_via_ytdlp", lambda url, **kwargs: None
+    )
 
-    def fake_subs(url, out_basename, languages, workdir):
+    def fake_subs(url, out_basename, languages, workdir, **kwargs):
         srt_path = Path(workdir) / f"{out_basename}.en.srt"
         srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello vimeo\n")
         return srt_path, "en"
@@ -696,3 +759,100 @@ def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
     )
     assert result["title"] == "Vimeo Talk"
     assert result["subtitle_path"].suffix == ".srt"
+
+
+def _github_cfg(subs, vault):
+    return {
+        "subtitles_repo_url": "https://github.com/me/subs.git",
+        "subtitles_repo_path": str(subs),
+        "subtitles_branch": "main",
+        "subtitles_dir_in_repo": "transcripts",
+        "vault_repo_url": "https://github.com/me/vault.git",
+        "vault_repo_path": str(vault),
+        "vault_branch": "main",
+        "vault_notes_dir": "notes",
+        "commit_author_name": "Test",
+        "commit_author_email": "test@example.com",
+    }
+
+
+def test_process_input_overcast_source_type_and_redirect_url(tmp_path, monkeypatch):
+    subs, vault = tmp_path / "subs", tmp_path / "vault"
+    cfg = {
+        "bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"},
+        "transcription": {},
+        "youtube": {"subtitle_languages": ["en"]},
+        "github": _github_cfg(subs, vault),
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "ensure_repo",
+        lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
+    )
+    monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
+    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(
+        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_overcast_episode",
+        lambda url: ("Episode One", "https://cdn.example/e.mp3", "2026-07-10"),
+    )
+    monkeypatch.setattr(
+        pipeline, "download_direct_file", lambda url, workdir: Path(workdir) / "e.mp3"
+    )
+    monkeypatch.setattr(
+        pipeline.bridge_client,
+        "transcribe_audio",
+        lambda *args: ("1\n...\nHi\n", "Hi"),
+    )
+
+    result = pipeline.process_input(
+        "https://overcast.fm/+abc", cfg, github_token="token", bridge_token="bridge"
+    )
+    assert result["source_type"] == "overcast"
+    note_text = result["note_path"].read_text()
+    assert "source_type: overcast" in note_text
+    assert "redirect_url: https://cdn.example/e.mp3" in note_text
+    assert "published_at: 2026-07-10" in note_text
+    assert "overcast" in note_text.split("tags: [")[1].splitlines()[0]
+
+
+def test_process_input_note_filename_preserves_exact_title(tmp_path, monkeypatch):
+    """The note filename should be the source title exactly (spaces and
+    capitalization preserved), not a lowercase/hyphenated slug."""
+    media = tmp_path / "Talk.mp3"
+    media.write_bytes(b"audio")
+    (tmp_path / "Talk.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+    subs, vault = tmp_path / "subs", tmp_path / "vault"
+    cfg = {
+        "bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"},
+        "transcription": {},
+        "youtube": {"subtitle_languages": ["en"]},
+        "github": _github_cfg(subs, vault),
+    }
+    monkeypatch.setattr(
+        pipeline,
+        "ensure_repo",
+        lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
+    )
+    monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
+    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(
+        pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
+    )
+
+    result = pipeline.process_input(
+        media,
+        cfg,
+        item_hint={"title": "ChatGPT Just Became a Work Agent: Here's How"},
+        github_token="token",
+        bridge_token="bridge",
+    )
+    assert result["note_path"].name == "ChatGPT Just Became a Work Agent Here's How.md"
+    # Subtitle filename still uses the lowercase/hyphenated slug, unaffected.
+    assert (
+        result["subtitle_path"].name
+        == "chatgpt-just-became-a-work-agent-heres-how.sidecar.srt"
+    )
