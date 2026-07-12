@@ -605,6 +605,10 @@ def process_input(
     """
     item_hint = item_hint or {}
     local_path = raw_input if isinstance(raw_input, Path) else None
+    if local_path is not None and not local_path.is_file():
+        raise ValueError(
+            f"Local input {local_path!r} is not an existing file (got directory or non-existent path)."
+        )
     source_type = (
         "local_file" if local_path is not None else detect_input_type(raw_input)
     )
@@ -847,9 +851,17 @@ def main():
 
     try:
         parsed_input = urlparse(args.input)
-        cli_input = (
-            args.input if parsed_input.scheme in ("http", "https") else Path(args.input)
-        )
+        if parsed_input.scheme in ("http", "https"):
+            cli_input = args.input
+        else:
+            local_file = Path(args.input)
+            if not local_file.is_file():
+                log.error(
+                    "Input %r is not an existing local file and not a valid http(s) URL.",
+                    args.input,
+                )
+                sys.exit(1)
+            cli_input = local_file
         result = process_input(cli_input, cfg)
         log.info("Done: %s -> %s", result["title"], result["note_path"])
     except NoTranscriptAvailableError as e:

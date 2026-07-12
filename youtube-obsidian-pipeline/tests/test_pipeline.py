@@ -413,3 +413,18 @@ def test_process_input_raises_no_transcript_available_when_no_subs_or_audio(
             github_token="t",
             bridge_token="b",
         )
+
+
+def test_process_input_rejects_nonexistent_path(tmp_path):
+    nonexistent = tmp_path / "does_not_exist.mp3"
+    cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}}
+    with pytest.raises(ValueError, match="not an existing file"):
+        pipeline.process_input(nonexistent, cfg)
+
+
+def test_process_input_rejects_directory_path(tmp_path):
+    directory = tmp_path / "subdir"
+    directory.mkdir()
+    cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}}
+    with pytest.raises(ValueError, match="not an existing file"):
+        pipeline.process_input(directory, cfg)
