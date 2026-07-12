@@ -261,15 +261,24 @@ def _ms_to_srt_timestamp(ms: float) -> str:
 def _podcast2_json_to_srt(payload: dict) -> str:
     """Convert a Podcasting 2.0 JSON transcript ({"segments": [...]}) to SRT."""
     segments = payload.get("segments") or []
+
+    non_empty_times = [
+        seg.get("startTime", 0)
+        for seg in segments
+        if seg.get("body", "").strip() and seg.get("startTime", 0) > 0
+    ]
+    if non_empty_times and all(t < 1000 for t in non_empty_times[:10]):
+        log.warning(
+            "Podcast JSON transcript has suspiciously small startTime values "
+            "(all under 1000) - generator may have emitted seconds instead of "
+            "milliseconds per the Podcasting 2.0 spec. Timestamps will be incorrect."
+        )
+
     out = []
     for i, seg in enumerate(segments, start=1):
         body = (seg.get("body") or "").strip()
         if not body:
             continue
-        # Podcasting 2.0's JSON transcript spec uses milliseconds; some
-        # generators emit fractional seconds instead - treat values under
-        # 1000 as certainly-seconds-not-ms would be unreliable, so we only
-        # handle the documented millisecond form here.
         start_ms = seg.get("startTime", 0)
         end_ms = seg.get("endTime", start_ms)
         out.append(str(i))

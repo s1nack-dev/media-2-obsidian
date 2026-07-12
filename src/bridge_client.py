@@ -59,7 +59,11 @@ def _post_json(url: str, data: bytes, headers: dict, timeout: int) -> dict:
     except HTTPError as e:
         body = e.read()
         try:
-            detail = json.loads(body).get("error") or body.decode("utf-8", "ignore")
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                detail = parsed.get("error") or body.decode("utf-8", "ignore")
+            else:
+                detail = body.decode("utf-8", "ignore")
         except (json.JSONDecodeError, ValueError):
             detail = body.decode("utf-8", "ignore")
         raise BridgeRequestError(

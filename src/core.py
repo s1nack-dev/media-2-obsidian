@@ -398,12 +398,13 @@ def safe_fetch(
     body: bytes | None = None,
     timeout: int = 30,
     max_redirects: int = 5,
+    max_response_bytes: int = 10 * 1024 * 1024,
 ) -> tuple[int, dict[str, str], bytes]:
     """
     SSRF-safe HTTP request for small text/JSON payloads (RSS feeds, iTunes
     Search API, Spotify Web API): pins the resolved IP via open_pinned() and
     revalidates every redirect hop before following it, closing the
-    DNS-rebinding TOCTOU gap. Response body is capped at MAX_MEDIA_BYTES.
+    DNS-rebinding TOCTOU gap. Response body is capped at max_response_bytes.
 
     Unlike the large-media-file download path (see pipeline.py's
     download_direct_file/_download_with_redirect_validation, which streams
@@ -411,23 +412,29 @@ def safe_fetch(
     status code so callers can branch on 401/403/404 themselves instead of
     treating every non-2xx response as fatal.
 
+    Parameters:
+        max_response_bytes (int): Maximum response body size in bytes.
+            Defaults to 10 MiB, appropriate for JSON/XML/HTML responses.
+            Can be increased for larger transcript files when needed.
+
     Returns:
         tuple[int, dict[str, str], bytes]: (status, response headers, body).
 
     Raises:
         ValueError: If a redirect is malformed, the redirect chain exceeds
-            max_redirects, or the body exceeds MAX_MEDIA_BYTES.
+            max_redirects, or the body exceeds max_response_bytes.
     """
     current_url = url
     current_method = method
     current_body = body
+    current_headers = headers
 
     for _ in range(max_redirects + 1):
         resp, _hostname = open_pinned(
             current_url,
             timeout,
             method=current_method,
-            headers=headers,
+            headers=current_headers,
             body=current_body,
         )
         if resp.status in (301, 302, 303, 307, 308):
@@ -437,7 +444,22 @@ def safe_fetch(
                 raise ValueError(
                     f"Redirect response {resp.status} without Location header"
                 )
+            previous_url = current_url
             current_url = urljoin(current_url, location)
+
+            previous_origin = (
+                f"{urlparse(previous_url).scheme}://{urlparse(previous_url).netloc}"
+            )
+            current_origin = (
+                f"{urlparse(current_url).scheme}://{urlparse(current_url).netloc}"
+            )
+            if previous_origin != current_origin and current_headers:
+                current_headers = {
+                    k: v
+                    for k, v in current_headers.items()
+                    if k.lower() not in ("authorization", "cookie")
+                }
+
             if resp.status == 303:
                 current_method, current_body = "GET", None
             continue
@@ -447,8 +469,10 @@ def safe_fetch(
         with resp:
             while chunk := resp.read(64 * 1024):
                 downloaded.extend(chunk)
-                if len(downloaded) > MAX_MEDIA_BYTES:
-                    raise ValueError(f"Response exceeds {MAX_MEDIA_BYTES} byte limit")
+                if len(downloaded) > max_response_bytes:
+                    raise ValueError(
+                        f"Response exceeds {max_response_bytes} byte limit"
+                    )
         return resp.status, resp_headers, bytes(downloaded)
 
     raise ValueError(f"Too many redirects (>{max_redirects}) when fetching {url}")
@@ -759,7 +783,8 @@ def build_note(
         lines.append(f"published_at: {published_at}")
     for key, value in (extra_frontmatter or {}).items():
         if value:
-            lines.append(f"{key}: {value}")
+            yaml_value = json.dumps(value) if isinstance(value, str) else str(value)
+            lines.append(f"{key}: {yaml_value}")
     lines += [
         f"processed_at: {today}",
         f"subtitles: {subtitle_github_url}",

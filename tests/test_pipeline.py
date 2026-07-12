@@ -538,7 +538,7 @@ def test_process_input_spotify_rss_transcript_bypasses_audio_download(
     assert result["title"] == "Episode One"
     assert result["subtitle_path"].suffix == ".srt"
     note_text = result["note_path"].read_text()
-    assert "podcast_feed_url: https://feed.example/rss" in note_text
+    assert 'podcast_feed_url: "https://feed.example/rss"' in note_text
 
 
 def test_process_input_spotify_no_transcript_falls_back_to_parakeet(
