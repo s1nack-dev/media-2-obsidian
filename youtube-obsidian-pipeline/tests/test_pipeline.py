@@ -14,10 +14,20 @@ def test_detect_input_type_urls(value, expected):
     assert pipeline.detect_input_type(value) == expected
 
 
-def test_detect_input_type_local_and_invalid(tmp_path):
-    assert pipeline.detect_input_type(str(tmp_path)) == "local_file"
+def test_detect_input_type_rejects_non_url_input(tmp_path):
     with pytest.raises(ValueError):
-        pipeline.detect_input_type("not a url")
+        pipeline.detect_input_type(str(tmp_path))
+
+
+def test_process_input_rejects_local_path_strings(tmp_path):
+    with pytest.raises(ValueError):
+        pipeline.process_input(str(tmp_path), {})
+
+
+@pytest.mark.parametrize("value", ["http:foo", "https:", "http:///tmp/file"])
+def test_detect_input_type_rejects_hostless_http_inputs(value):
+    with pytest.raises(ValueError):
+        pipeline.detect_input_type(value)
 
 
 @pytest.mark.parametrize(
@@ -88,7 +98,7 @@ def test_process_local_sidecar_end_to_end(tmp_path, monkeypatch):
         pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
     )
     result = pipeline.process_input(
-        str(media), cfg, github_token="token", bridge_token="bridge"
+        media, cfg, github_token="token", bridge_token="bridge"
     )
     assert result["title"] == "Talk"
     assert result["note_path"].read_text().find("summary") >= 0
@@ -368,7 +378,7 @@ def test_process_input_propagates_transcription_runtime_error(tmp_path, monkeypa
         lambda *args: (_ for _ in ()).throw(RuntimeError("down")),
     )
     with pytest.raises(RuntimeError):
-        pipeline.process_input(str(media), cfg, github_token="t", bridge_token="b")
+        pipeline.process_input(media, cfg, github_token="t", bridge_token="b")
 
 
 def test_process_input_raises_no_transcript_available_when_no_subs_or_audio(
@@ -403,3 +413,18 @@ def test_process_input_raises_no_transcript_available_when_no_subs_or_audio(
             github_token="t",
             bridge_token="b",
         )
+
+
+def test_process_input_rejects_nonexistent_path(tmp_path):
+    nonexistent = tmp_path / "does_not_exist.mp3"
+    cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}}
+    with pytest.raises(ValueError, match="not an existing file"):
+        pipeline.process_input(nonexistent, cfg)
+
+
+def test_process_input_rejects_directory_path(tmp_path):
+    directory = tmp_path / "subdir"
+    directory.mkdir()
+    cfg = {"bridge": {"url": "http://bridge", "auth_token_op_ref": "ref"}}
+    with pytest.raises(ValueError, match="not an existing file"):
+        pipeline.process_input(directory, cfg)

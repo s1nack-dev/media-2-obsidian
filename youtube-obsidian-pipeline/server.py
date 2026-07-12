@@ -36,6 +36,7 @@ import sys
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse
 
 from core import (
     load_config,
@@ -175,16 +176,26 @@ def make_handler(auth_token: str):
                 self._send_json(400, {"error": "missing 'input' field"})
                 return
 
+            # Validate URL scheme and hostname before calling detect_input_type
+            try:
+                parsed = urlparse(raw_input)
+            except ValueError as e:
+                self._send_json(400, {"error": f"malformed URL: {e}"})
+                return
+
+            if parsed.scheme not in ("http", "https"):
+                self._send_json(
+                    400, {"error": "only http(s) URLs are accepted over the network"}
+                )
+                return
+            if not parsed.hostname:
+                self._send_json(400, {"error": "HTTP(S) URL must have a hostname"})
+                return
+
             try:
                 input_type = detect_input_type(raw_input)
             except ValueError as e:
                 self._send_json(400, {"error": str(e)})
-                return
-
-            if input_type == "local_file":
-                self._send_json(
-                    400, {"error": "local file paths are not accepted over the network"}
-                )
                 return
 
             # SSRF protection: validate URL before enqueueing
