@@ -7,8 +7,7 @@
 #   scripts/run-local.sh start   # (default) start host_bridge.py if not already up
 #   scripts/run-local.sh stop    # stop the host_bridge.py this script started
 #
-# After start, in another terminal:
-#   cd youtube-obsidian-pipeline
+# After start, in another terminal (from the repo root):
 #   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python pipeline.py --config config.yaml --input <path-or-url>
 #   BRIDGE_URL=http://127.0.0.1:8081 op run -- uv run python fetch_playlist.py --config config.yaml
 set -euo pipefail

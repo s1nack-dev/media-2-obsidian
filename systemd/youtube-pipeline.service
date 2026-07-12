@@ -21,9 +21,9 @@ After=network-online.target
 [Service]
 Type=oneshot
 # Change to wherever you deployed this project:
-WorkingDirectory=/opt/youtube-obsidian-pipeline
+WorkingDirectory=/opt/media-2-obsidian
 # Holds GITHUB_TOKEN=... and (if using email alerts) SMTP_PASSWORD=...
-EnvironmentFile=/opt/youtube-obsidian-pipeline/.env
+EnvironmentFile=/opt/media-2-obsidian/.env
 # Use the full path to uv (find it with `which uv`) - systemd services get a
 # minimal PATH that usually doesn't include ~/.local/bin. Wrap with `op run --`
 # to resolve op:// secret references from the EnvironmentFile at runtime.

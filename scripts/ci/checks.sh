@@ -12,12 +12,12 @@ run_hook() {
   shift
   local targets=("$@")
   if ((${#targets[@]} == 0)); then
-    targets=(youtube-obsidian-pipeline)
+    targets=(.)
   fi
   local semgrep_targets=("${targets[@]}")
   if [[ "$hook" == semgrep && "$#" -eq 0 ]]; then
     mapfile -t semgrep_targets < <(
-      git ls-files | awk '$0 ~ /^youtube-obsidian-pipeline\/.*\.py$/ { print }'
+      git ls-files | awk '$0 ~ /\.py$/ { print }'
     )
   fi
 
@@ -32,16 +32,16 @@ run_hook() {
       uvx --from "ruff==${RUFF_VERSION}" ruff format --check "${targets[@]}"
       ;;
     pytest)
-      uv run --project youtube-obsidian-pipeline --extra test pytest -q
+      uv run --extra test pytest -q
       ;;
     bandit)
       if (($#)); then
         uvx --from "bandit[toml]==${BANDIT_VERSION}" bandit -ll -ii \
-          -c youtube-obsidian-pipeline/pyproject.toml "$@"
+          -c pyproject.toml "$@"
       else
         uvx --from "bandit[toml]==${BANDIT_VERSION}" bandit -r \
-          youtube-obsidian-pipeline -ll -ii \
-          -c youtube-obsidian-pipeline/pyproject.toml
+          . -ll -ii \
+          -c pyproject.toml
       fi
       ;;
     semgrep)
@@ -50,13 +50,13 @@ run_hook() {
         "${semgrep_targets[@]}"
       ;;
     pip-audit)
-      uv export --project youtube-obsidian-pipeline --frozen --no-dev \
+      uv export --frozen --no-dev \
         --no-emit-project --format requirements-txt |
         uvx --from "pip-audit==${PIP_AUDIT_VERSION}" pip-audit \
           --strict -r /dev/stdin
       ;;
     hadolint)
-      local dockerfile="youtube-obsidian-pipeline/Dockerfile"
+      local dockerfile="Dockerfile"
       if (($#)); then
         dockerfile="$1"
       fi
@@ -70,7 +70,7 @@ run_hook() {
         "aquasec/trivy:${TRIVY_VERSION}" config \
         --config /src/trivy.yaml --ignorefile /src/.trivyignore \
         --cache-dir /tmp/trivy-cache --skip-version-check \
-        /src/youtube-obsidian-pipeline
+        /src
       ;;
     trivy-fs)
       docker run --rm -v "$ROOT_DIR:/src:ro" \
@@ -78,7 +78,7 @@ run_hook() {
         "aquasec/trivy:${TRIVY_VERSION}" fs \
         --config /src/trivy.yaml --scanners vuln,secret \
         --cache-dir /tmp/trivy-cache --skip-version-check \
-        /src/youtube-obsidian-pipeline
+        /src
       ;;
     detect-secrets)
       if (($#)); then
@@ -86,7 +86,7 @@ run_hook() {
           detect-secrets-hook --baseline .secrets.baseline "$@"
       else
         git ls-files -z ':!.secrets.baseline' \
-          ':!youtube-obsidian-pipeline/uv.lock' |
+          ':!uv.lock' |
           xargs -0 -r uvx --from "detect-secrets==${DETECT_SECRETS_VERSION}" \
             detect-secrets-hook --baseline .secrets.baseline
       fi
