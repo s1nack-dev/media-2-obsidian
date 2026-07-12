@@ -706,6 +706,33 @@ def slugify(title: str) -> str:
 # unicode, ordinary punctuation - is left exactly as the source titled it.
 _ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
+_WINDOWS_RESERVED_NAMES = frozenset(
+    [
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    ]
+)
+
 
 def safe_filename(title: str, max_length: int = 200) -> str:
     """
@@ -714,7 +741,7 @@ def safe_filename(title: str, max_length: int = 200) -> str:
 
     Parameters:
         title (str): Title to sanitize.
-        max_length (int): Maximum filename length (before any extension).
+        max_length (int): Maximum filename length in UTF-8 bytes (before any extension).
 
     Returns:
         str: The title with only filesystem-illegal characters removed and
@@ -722,8 +749,24 @@ def safe_filename(title: str, max_length: int = 200) -> str:
     """
     cleaned = _ILLEGAL_FILENAME_CHARS_RE.sub("", title)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    cleaned = cleaned.rstrip(". ")  # trailing dot/space is invalid on Windows
-    return cleaned[:max_length] or "untitled"
+    cleaned = cleaned.rstrip(". ")
+    if not cleaned:
+        return "untitled"
+    if cleaned.upper() in _WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) <= max_length:
+        return cleaned
+
+    truncated = encoded[:max_length]
+    while truncated:
+        try:
+            return truncated.decode("utf-8")
+        except UnicodeDecodeError:
+            truncated = truncated[:-1]
+
+    return "untitled"
 
 
 def build_note(

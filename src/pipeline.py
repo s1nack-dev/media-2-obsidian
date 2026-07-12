@@ -754,6 +754,7 @@ def _resolve_generic_link(
 def _resolve_overcast(
     raw_input: str,
     item_hint: dict,
+    cfg: dict,
     workdir: Path,
     bridge_url: str,
     bridge_token: str,
@@ -761,14 +762,19 @@ def _resolve_overcast(
 ) -> ProviderResolution:
     """Overcast episode page: resolve_overcast_episode() finds the real RSS
     mp3 enclosure (Overcast doesn't host audio itself), then transcribes it
-    through the same Parakeet path as any other audio source."""
+    through the same Parakeet path as any other audio source. Falls back to
+    generic yt-dlp handling if Overcast scraping fails."""
     title = item_hint.get("title")
     published_at = item_hint.get("published_at")
 
     overcast_resolved = resolve_overcast_episode(raw_input)
     if overcast_resolved is None:
-        log.warning("Could not resolve Overcast episode %s", raw_input)
-        return ProviderResolution(title=title or raw_input[:80], source_url=raw_input)
+        log.warning(
+            "Could not resolve Overcast episode %s; falling back to yt-dlp", raw_input
+        )
+        return _resolve_generic_link(
+            raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+        )
 
     resolved_title, mp3_url, resolved_published_at = overcast_resolved
     if title is None:
@@ -958,7 +964,7 @@ def process_input(
             )
         elif source_type == "overcast":
             resolution = _resolve_overcast(
-                raw_input, item_hint, workdir, bridge_url, bridge_token, model_id
+                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
             )
         elif source_type == "spotify":
             resolution = _resolve_spotify(
