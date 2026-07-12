@@ -120,7 +120,10 @@ def detect_input_type(raw_input: str) -> str:
         if YOUTUBE_HOST_RE.search(host):
             return "youtube"
         return "generic_link"
-    if Path(raw_input).exists():
+    # Local files are an explicit CLI/library input. The HTTP webhook rejects
+    # non-hosted URLs before calling this function, so network input cannot
+    # reach this intentional local-file check.
+    if Path(raw_input).exists():  # lgtm [py/path-injection]
         return "local_file"
     raise ValueError(
         f"Input {raw_input!r} is not an existing local file and not a valid http(s) URL."
