@@ -1,0 +1,215 @@
+# Architecture
+
+High-level, diagram-first view of how the pipeline is put together. For full detail on
+config keys, secrets, scheduling, and per-file behavior, see [`CLAUDE.md`](../CLAUDE.md).
+
+## 1. Components
+
+The system splits along one hard constraint: `host_bridge.py` and the two modules it
+wraps need to run natively on an Apple Silicon Mac (MLX for transcription, a
+keychain-bound Claude CLI session for summarization). Everything else is plain
+Python with no host dependency, which is what lets it run in a Linux container.
+
+```mermaid
+flowchart TB
+    subgraph portable["Portable (native or container)"]
+        fetch["fetch_playlist.py<br/><i>polls YouTube playlist</i>"]
+        server["server.py<br/><i>webhook: POST /process</i>"]
+        pipeline["pipeline.py<br/><i>process_input()</i>"]
+        bridgeclient["bridge_client.py<br/><i>HTTP client</i>"]
+        core["core.py<br/><i>config, state, git, notify</i>"]
+    end
+
+    subgraph hostonly["Host-only (native Mac, never containerized)"]
+        bridge["host_bridge.py<br/><i>HTTP server on 127.0.0.1</i>"]
+        claude["claude_client.py<br/><i>summarize + tag via Claude CLI</i>"]
+        transcribe["transcribe_backend.py<br/><i>Parakeet/MLX</i>"]
+    end
+
+    auth["youtube_auth.py<br/><i>one-time OAuth setup</i>"]
+
+    fetch --> pipeline
+    server --> pipeline
+    fetch --> core
+    server --> core
+    pipeline --> core
+    pipeline --> bridgeclient
+    bridgeclient -- "HTTP, auth-token-gated" --> bridge
+    bridge --> claude
+    bridge --> transcribe
+    bridge --> core
+    claude -. "claude -p (sandboxed)" .-> claudeCLI(["Claude CLI"])
+    transcribe -. "MLX" .-> parakeet(["Parakeet model"])
+
+    style hostonly fill:#2d1b1b,stroke:#a33
+    style portable fill:#1b2d1e,stroke:#3a3
+```
+
+**Why this shape:** `pipeline.py` never talks to MLX or the Claude CLI directly — it
+calls `bridge_client.py`, which calls `host_bridge.py` over HTTP. That indirection is
+the entire reason `pipeline.py`/`fetch_playlist.py`/`server.py` can run in a container
+while transcription and summarization still happen on the Mac.
+
+## 2. Deployment topology: native vs. containerized
+
+Same `config.yaml`, two ways to run it. Only `bridge.url` differs between them.
+
+```mermaid
+flowchart LR
+    subgraph native["Native deployment"]
+        direction TB
+        n1["fetch_playlist.py / pipeline.py / server.py<br/>(processes on the Mac)"]
+        n2["host_bridge.py<br/>127.0.0.1:8081"]
+        n1 -- "127.0.0.1" --> n2
+    end
+
+    subgraph containerized["Containerized deployment"]
+        direction TB
+        c0(["Internet"]) --> cf["cloudflared"]
+        cf -- "compose network" --> cs["pipeline-server<br/>(server.py)"]
+        subgraph dockernet["Docker network"]
+            cs
+            cfd["pipeline-fetch<br/>(fetch_playlist.py --loop)"]
+        end
+        cs -- "host.docker.internal:8081" --> c2["host_bridge.py<br/>(native, outside Docker)"]
+        cfd -- "host.docker.internal:8081" --> c2
+    end
+
+    n2 --> gh[("GitHub: subtitles repo + vault repo")]
+    c2 --> gh
+```
+
+**Notes:**
+- `host_bridge.py` is never containerized in either mode — it must already be running
+  before `pipeline.py`/`fetch_playlist.py`/`server.py` will succeed.
+- In containerized mode, the two repo clone directories are bind-mounted at the *same
+  absolute host paths* named in `config.yaml`, so both deployment modes see identical
+  git state.
+- `cloudflared`'s Public Hostname points at the compose service name
+  (`pipeline-server:8080`), not `host.docker.internal` — that hostname only means
+  something for the container → host-bridge hop.
+
+## 3. External API access via Cloudflare Tunnel
+
+`server.py`'s `POST /process` is the only way something outside this Mac triggers the
+pipeline. The request is validated and enqueued synchronously, but the actual work
+(download/transcribe/summarize/commit) happens later on a background thread — the
+caller's `202` response arrives long before the job is done, and there's no polling
+endpoint. The caller finds out what happened via `notify()` (Slack/email), not via
+the HTTP response.
+
+```mermaid
+sequenceDiagram
+    participant Caller as External caller
+    participant CF as Cloudflare edge
+    participant Tunnel as cloudflared
+    participant Server as server.py (do_POST)
+    participant Queue as in-memory job queue (max 50)
+    participant Worker as background worker thread
+    participant Pipeline as pipeline.process_input()
+    participant Notify as notify() (Slack + email)
+
+    Caller->>CF: POST https://<public-hostname>/process<br/>Authorization: Bearer <webhook token><br/>{"input": "<url>"}
+    CF->>Tunnel: forwarded through the tunnel
+    Tunnel->>Server: POST /process (compose network: pipeline-server:8080)
+    Server->>Server: check Bearer token (secrets.compare_digest)
+    Server->>Server: parse JSON, require "input", body <= 10KB
+    Server->>Server: require http(s) scheme + hostname
+    Server->>Server: detect_input_type() + validate_public_url() (SSRF guard)
+    Server->>Queue: put_nowait(raw_input)
+    Queue-->>Server: queued (429 if full)
+    Server-->>Caller: 202 {"status":"queued","queue_depth":N}
+
+    Note over Caller,Notify: Caller's request is done here. Everything below<br/>runs async and is reported only via notify().
+
+    Worker->>Queue: get()
+    Worker->>Worker: re-validate URL (defense in depth)
+    Worker->>Pipeline: process_input(raw_input, cfg, github_token, bridge_token)
+    Pipeline-->>Worker: result or exception
+    Worker->>Notify: success or failure notification
+```
+
+**Why the split matters:**
+- The HTTP handler never does slow work itself — it only validates and enqueues —
+  because tunnel/edge requests typically time out long before a
+  download-transcribe-summarize-commit cycle finishes.
+- A single background thread drains the queue one job at a time, same as the native
+  case: `process_input()` shares `host_bridge.py`'s cached Parakeet model and the
+  on-disk git clones across calls, so concurrent processing isn't safe.
+- The webhook auth token (`webhook.auth_token_op_ref`) is a distinct secret from the
+  bridge auth token (`bridge.auth_token_op_ref`) — a public internet caller and the
+  Docker-network-only `pipeline.py` → `host_bridge.py` hop are different trust
+  boundaries and never share a credential.
+- Only `http(s)` URLs are accepted here (unlike the CLI's `--input`, which also
+  accepts local file paths) — a network caller has no business asking this Mac to
+  read an arbitrary local file, and `validate_public_url()` additionally rejects
+  private/loopback IPs to block SSRF via redirects or DNS rebinding.
+
+## 4. One input, start to finish
+
+Whether it's `fetch_playlist.py` finding a new playlist video, `server.py` receiving a
+webhook, or a manual `pipeline.py --input`, everything funnels into
+`process_input()`.
+
+```mermaid
+sequenceDiagram
+    participant Trigger as fetch_playlist / server / --input
+    participant P as pipeline.process_input()
+    participant YT as yt-dlp
+    participant BC as bridge_client.py
+    participant HB as host_bridge.py
+    participant TB as transcribe_backend.py (Parakeet)
+    participant CC as claude_client.py (Claude CLI)
+    participant GH as GitHub (subtitles + vault repos)
+
+    Trigger->>P: raw_input (path / YouTube URL / link)
+    P->>P: detect_input_type()
+    P->>YT: try downloading existing subtitles
+    alt subtitles exist
+        YT-->>P: .srt
+    else no subtitles
+        P->>BC: transcribe_audio(audio)
+        BC->>HB: POST /transcribe
+        HB->>TB: transcribe_audio()
+        TB-->>HB: (srt_text, plain_text)
+        HB-->>BC: transcript
+        BC-->>P: transcript
+    end
+    P->>BC: summarize(transcript)
+    BC->>HB: POST /summarize
+    HB->>CC: summarize_with_claude()
+    CC-->>HB: ## SUMMARY ...
+    HB-->>P: summary
+    P->>BC: generate_tags(transcript)
+    BC->>HB: POST /tags
+    HB->>CC: generate_tags_with_claude()
+    CC-->>P: tags
+    P->>GH: commit transcript (subtitles repo)
+    P->>GH: commit markdown note (vault repo)
+    P-->>Trigger: success / notify() on failure
+```
+
+`overcast.fm` links get one extra hop before this diagram starts: `pipeline.py`
+resolves the RSS feed + matching `<enclosure>` mp3 and feeds that in as if it were a
+direct media URL, falling back to generic link handling if any step fails.
+
+## 5. Secrets resolution: native vs. container
+
+Every secret (GitHub token, bridge/webhook auth tokens, Google OAuth client
+id/secret) goes through the same function, which picks its source based on where
+it's running rather than branching per-deployment code.
+
+```mermaid
+flowchart TD
+    start(["resolve_secret(env_var, op_ref)"]) --> check{"Is env_var<br/>already set?"}
+    check -- "yes (container)" --> containerPath["Use the env var directly"]
+    check -- "no (native)" --> nativePath["op_read(op_ref)<br/>shells out to `op`"]
+
+    containerPath --> note1["docker-compose already injected it:<br/>`op run --env-file` resolved the same<br/>op:// refs on the host before `docker compose up`"]
+    nativePath --> note2["Desktop app handles `op` CLI auth<br/>directly — no service account needed"]
+```
+
+**Why one function, not two code paths:** natively, `op` is authenticated via the
+1Password desktop app, so `op_read()` just works. In a container there's no `op`
+binary at all, so the same env vars are pre-resolved on the host and passed straight
+through — `resolve_secret()` never needs to know which mode it's in.
