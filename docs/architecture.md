@@ -85,8 +85,9 @@ flowchart LR
         cfd -- "host.docker.internal:8081" --> c2
     end
 
-    n2 --> gh[("GitHub: subtitles repo + vault repo")]
-    c2 --> gh
+    n1 --> gh[("GitHub: subtitles repo + vault repo")]
+    cs --> gh
+    cfd --> gh
 ```
 
 **Notes:**
@@ -266,11 +267,14 @@ sequenceDiagram
     BC->>HB: POST /summarize
     HB->>CC: summarize_with_claude()
     CC-->>HB: ## SUMMARY ...
-    HB-->>P: summary
+    HB-->>BC: summary
+    BC-->>P: summary
     P->>BC: generate_tags(transcript_text)
     BC->>HB: POST /tags
     HB->>CC: generate_tags_with_claude()
-    CC-->>P: tags
+    CC-->>HB: tags
+    HB-->>BC: tags
+    BC-->>P: tags
     P->>GH: commit transcript (subtitles repo)
     P->>GH: commit markdown note (vault repo, extra_frontmatter merged in)
     P-->>P: return {title, source_type, note_path, subtitle_path}
@@ -282,21 +286,26 @@ without `process_input()` needing to know which source produced it.
 
 ## 7. Secrets resolution: native vs. container
 
-Every secret (GitHub token, bridge/webhook auth tokens, Google OAuth client
-id/secret) goes through the same function, which picks its source based on where
-it's running rather than branching per-deployment code.
+Runtime service secrets (GitHub token, bridge/webhook auth tokens) go through the
+same function, which picks its source based on where it's running rather than
+branching per-deployment code.
 
 ```mermaid
 flowchart TD
     start(["resolve_secret(env_var, op_ref)"]) --> check{"Is env_var<br/>already set?"}
-    check -- "yes (container)" --> containerPath["Use the env var directly"]
-    check -- "no (native)" --> nativePath["op_read(op_ref)<br/>shells out to `op`"]
+    check -- "yes (env var present)" --> envPath["Use the env var directly"]
+    check -- "no (env var absent)" --> opPath["op_read(op_ref)<br/>shells out to `op`"]
 
-    containerPath --> note1["docker-compose already injected it:<br/>`op run --env-file` resolved the same<br/>op:// refs on the host before `docker compose up`"]
-    nativePath --> note2["Desktop app handles `op` CLI auth<br/>directly — no service account needed"]
+    envPath --> note1["Typical container case: docker-compose injected it via<br/>`op run --env-file`, which resolved op:// refs on the host<br/>before `docker compose up`"]
+    opPath --> note2["Typical native case: desktop app handles `op` CLI auth<br/>directly — no service account needed"]
 ```
 
 **Why one function, not two code paths:** natively, `op` is authenticated via the
 1Password desktop app, so `op_read()` just works. In a container there's no `op`
 binary at all, so the same env vars are pre-resolved on the host and passed straight
 through — `resolve_secret()` never needs to know which mode it's in.
+
+**Exception:** Google OAuth client id/secret (for YouTube API access) are handled
+outside this flow. `youtube_auth.py` is a one-time setup script that reads those
+values directly with its own `op_read()` call, so the pre-populated environment
+variable mechanism documented above does not apply to that initial OAuth handshake.
