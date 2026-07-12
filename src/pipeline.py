@@ -305,7 +305,9 @@ def fetch_title_via_ytdlp(url: str, restrict_extractors: bool = False) -> str | 
     return None
 
 
-def fetch_published_at_via_ytdlp(url: str, restrict_extractors: bool = False) -> str | None:
+def fetch_published_at_via_ytdlp(
+    url: str, restrict_extractors: bool = False
+) -> str | None:
     """Fetch the upload/release date yt-dlp reports for a URL.
 
     Parameters:
@@ -340,7 +342,9 @@ def fetch_published_at_via_ytdlp(url: str, restrict_extractors: bool = False) ->
     return None
 
 
-def download_audio_via_ytdlp(url: str, workdir: Path, restrict_extractors: bool = False) -> Path | None:
+def download_audio_via_ytdlp(
+    url: str, workdir: Path, restrict_extractors: bool = False
+) -> Path | None:
     """
     Download the best available audio for a URL and return the resulting local file.
 
@@ -769,7 +773,11 @@ def _resolve_generic_link(
 
     raw = text = lang = None
     subs_result = _ytdlp_download_subs(
-        raw_input, "transcript", _subtitle_languages(cfg), workdir, restrict_extractors=True
+        raw_input,
+        "transcript",
+        _subtitle_languages(cfg),
+        workdir,
+        restrict_extractors=True,
     )
     if subs_result is not None:
         srt_path, lang = subs_result
