@@ -84,6 +84,23 @@ DIRECT_MEDIA_EXTENSIONS = {
     ".flac",
 }
 
+# SSRF protection: explicit allowlist of trusted extractors for yt-dlp.
+# Excludes 'generic' extractor which can fetch arbitrary embedded URLs.
+# Used when processing arbitrary/generic URLs to prevent yt-dlp from being
+# used as an open SSRF proxy.
+YTDLP_ALLOWED_EXTRACTORS = [
+    "youtube",
+    "vimeo",
+    "dailymotion",
+    "twitter",
+    "soundcloud",
+    "mixcloud",
+    "bandcamp",
+    "twitch",
+    "reddit",
+    "instagram",
+]
+
 
 class PipelineError(Exception):
     """Base class for pipeline-specific errors."""
@@ -179,7 +196,11 @@ def _subtitle_languages(cfg: dict) -> list[str]:
 
 
 def _ytdlp_download_subs(
-    url: str, out_basename: str, languages: list[str], workdir: Path
+    url: str,
+    out_basename: str,
+    languages: list[str],
+    workdir: Path,
+    restrict_extractors: bool = False,
 ) -> tuple[Path, str] | None:
     """
     Download available subtitles for a URL as an SRT file.
@@ -189,6 +210,8 @@ def _ytdlp_download_subs(
         out_basename (str): Base name for the generated subtitle file.
         languages (list[str]): Preferred subtitle language codes.
         workdir (Path): Directory for downloaded subtitle files.
+        restrict_extractors (bool): If True, restrict to YTDLP_ALLOWED_EXTRACTORS
+            (SSRF protection for generic/arbitrary URLs).
 
     Returns:
         tuple[Path, str] | None: The selected SRT path and its language code, or None if no subtitles are available.
@@ -207,8 +230,10 @@ def _ytdlp_download_subs(
         "srt",
         "-o",
         out_tmpl,
-        url,
     ]
+    if restrict_extractors:
+        cmd.extend(["--ies", ",".join(YTDLP_ALLOWED_EXTRACTORS)])
+    cmd.append(url)
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT_SECONDS
@@ -254,17 +279,23 @@ def download_subtitles(
     return _ytdlp_download_subs(url, video_id, languages, workdir)
 
 
-def fetch_title_via_ytdlp(url: str) -> str | None:
+def fetch_title_via_ytdlp(url: str, restrict_extractors: bool = False) -> str | None:
     """Fetch the media title reported by yt-dlp.
 
     Parameters:
         url (str): The media URL to inspect.
+        restrict_extractors (bool): If True, restrict to YTDLP_ALLOWED_EXTRACTORS
+            (SSRF protection for generic/arbitrary URLs).
 
     Returns:
         str | None: The first non-empty title line, or `None` if yt-dlp cannot provide a title.
     """
+    cmd = ["yt-dlp", "--skip-download", "--print", "title"]
+    if restrict_extractors:
+        cmd.extend(["--ies", ",".join(YTDLP_ALLOWED_EXTRACTORS)])
+    cmd.append(url)
     result = subprocess.run(
-        ["yt-dlp", "--skip-download", "--print", "title", url],
+        cmd,
         capture_output=True,
         text=True,
         timeout=60,
@@ -274,19 +305,25 @@ def fetch_title_via_ytdlp(url: str) -> str | None:
     return None
 
 
-def fetch_published_at_via_ytdlp(url: str) -> str | None:
+def fetch_published_at_via_ytdlp(url: str, restrict_extractors: bool = False) -> str | None:
     """Fetch the upload/release date yt-dlp reports for a URL.
 
     Parameters:
         url (str): The media URL to inspect.
+        restrict_extractors (bool): If True, restrict to YTDLP_ALLOWED_EXTRACTORS
+            (SSRF protection for generic/arbitrary URLs).
 
     Returns:
         str | None: An ISO `YYYY-MM-DD` date, or `None` if yt-dlp can't
         provide one (unsupported site, no date in the source metadata, etc.)
     """
+    cmd = ["yt-dlp", "--skip-download", "--print", "%(upload_date)s"]
+    if restrict_extractors:
+        cmd.extend(["--ies", ",".join(YTDLP_ALLOWED_EXTRACTORS)])
+    cmd.append(url)
     try:
         result = subprocess.run(
-            ["yt-dlp", "--skip-download", "--print", "%(upload_date)s", url],
+            cmd,
             capture_output=True,
             text=True,
             timeout=60,
@@ -303,13 +340,15 @@ def fetch_published_at_via_ytdlp(url: str) -> str | None:
     return None
 
 
-def download_audio_via_ytdlp(url: str, workdir: Path) -> Path | None:
+def download_audio_via_ytdlp(url: str, workdir: Path, restrict_extractors: bool = False) -> Path | None:
     """
     Download the best available audio for a URL and return the resulting local file.
 
     Parameters:
         url (str): Media URL to download.
         workdir (Path): Directory where the downloaded audio file is saved.
+        restrict_extractors (bool): If True, restrict to YTDLP_ALLOWED_EXTRACTORS
+            (SSRF protection for generic/arbitrary URLs).
 
     Returns:
         Path | None: The downloaded audio file, or `None` if the download fails or produces no file.
@@ -325,8 +364,10 @@ def download_audio_via_ytdlp(url: str, workdir: Path) -> Path | None:
         "mp3",
         "-o",
         out_tmpl,
-        url,
     ]
+    if restrict_extractors:
+        cmd.extend(["--ies", ",".join(YTDLP_ALLOWED_EXTRACTORS)])
+    cmd.append(url)
     result = subprocess.run(
         cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT_SECONDS
     )
@@ -720,15 +761,15 @@ def _resolve_generic_link(
     validate_public_url(raw_input)
 
     published_at = item_hint.get("published_at") or fetch_published_at_via_ytdlp(
-        raw_input
+        raw_input, restrict_extractors=True
     )
 
     if title is None:
-        title = fetch_title_via_ytdlp(raw_input)
+        title = fetch_title_via_ytdlp(raw_input, restrict_extractors=True)
 
     raw = text = lang = None
     subs_result = _ytdlp_download_subs(
-        raw_input, "transcript", _subtitle_languages(cfg), workdir
+        raw_input, "transcript", _subtitle_languages(cfg), workdir, restrict_extractors=True
     )
     if subs_result is not None:
         srt_path, lang = subs_result
@@ -738,7 +779,7 @@ def _resolve_generic_link(
         media_path = (
             download_direct_file(raw_input, workdir)
             if is_direct_media_url(raw_input)
-            else download_audio_via_ytdlp(raw_input, workdir)
+            else download_audio_via_ytdlp(raw_input, workdir, restrict_extractors=True)
         )
         if media_path is not None:
             raw, text = bridge_client.transcribe_audio(
