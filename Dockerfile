@@ -37,7 +37,7 @@ ENV UV_NO_DEV=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked
 
-COPY core.py pipeline.py fetch_playlist.py server.py bridge_client.py youtube_auth.py ./
+COPY src/core.py src/pipeline.py src/fetch_playlist.py src/server.py src/bridge_client.py src/youtube_auth.py src/podcast_rss.py src/spotify_client.py ./src/
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
@@ -60,4 +60,4 @@ USER pipeline
 # network, not the host) since it's inside a container now. Override
 # `command:` in docker-compose.yml for the fetch_playlist.py --loop
 # service.
-CMD ["python", "server.py", "--config", "config.yaml", "--host", "0.0.0.0"]
+CMD ["python", "src/server.py", "--config", "config.yaml", "--host", "0.0.0.0"]

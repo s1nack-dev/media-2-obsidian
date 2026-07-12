@@ -49,7 +49,7 @@ start_host_bridge() {
         exit 1
     fi
     echo "Starting host_bridge.py (native, ad hoc) on port ${port} - required even in Docker mode..."
-    nohup op run -- uv run --extra mlx python host_bridge.py --config config.yaml \
+    nohup op run -- uv run --extra mlx python src/host_bridge.py --config config.yaml \
         > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
