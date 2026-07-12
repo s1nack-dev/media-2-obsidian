@@ -227,9 +227,10 @@ def resolve_episode_metadata(url: str, cfg: dict) -> dict | None:
     scraping the public episode page otherwise.
 
     Returns:
-        dict | None: {"title", "show_name", "description"}, or None if the
-        episode is unsupported/private and no metadata could be found by
-        either method.
+        dict | None: {"title", "show_name", "description", "release_date"}
+        (release_date is only present when the Web API path succeeds),
+        or None if the episode is unsupported/private and no metadata
+        could be found by either method.
     """
     episode_id = extract_episode_id(url)
     if episode_id is None:

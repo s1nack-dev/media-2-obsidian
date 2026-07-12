@@ -712,11 +712,12 @@ def _resolve_generic_link(
     """
     source_url = raw_input
     title = item_hint.get("title")
+
+    validate_public_url(raw_input)
+
     published_at = item_hint.get("published_at") or fetch_published_at_via_ytdlp(
         raw_input
     )
-
-    validate_public_url(raw_input)
 
     if title is None:
         title = fetch_title_via_ytdlp(raw_input)

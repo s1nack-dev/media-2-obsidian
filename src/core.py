@@ -752,7 +752,8 @@ def safe_filename(title: str, max_length: int = 200) -> str:
     cleaned = cleaned.rstrip(". ")
     if not cleaned:
         return "untitled"
-    if cleaned.upper() in _WINDOWS_RESERVED_NAMES:
+    stem = cleaned.split(".", 1)[0].rstrip(". ").upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
         cleaned = f"_{cleaned}"
 
     encoded = cleaned.encode("utf-8")
