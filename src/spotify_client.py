@@ -125,8 +125,12 @@ def fetch_episode_metadata(
         timeout (int): Request timeout in seconds.
 
     Returns:
-        dict | None: {"title", "show_name", "description"}, or None if the
-        episode is private/unavailable or the request fails.
+        dict | None: {"title", "show_name", "description", "release_date"},
+        or None if the episode is private/unavailable or the request fails.
+        release_date is Spotify's own value (format varies with the show's
+        release_date_precision - day/month/year) - RSS's <pubDate> is
+        preferred where available since it's consistently a full date, this
+        is only a fallback when RSS resolution didn't happen or had none.
     """
     url = f"{API_BASE}/episodes/{episode_id}"
     try:
@@ -139,6 +143,7 @@ def fetch_episode_metadata(
                 "title": payload.get("name"),
                 "show_name": (payload.get("show") or {}).get("name"),
                 "description": payload.get("description"),
+                "release_date": payload.get("release_date"),
             }
         if status in (401, 403, 404):
             log.warning(

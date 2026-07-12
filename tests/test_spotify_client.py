@@ -86,7 +86,12 @@ def test_get_access_token_failure_status_returns_none(monkeypatch):
 
 def test_fetch_episode_metadata_success(monkeypatch):
     payload = json.dumps(
-        {"name": "Episode Title", "show": {"name": "Show Name"}, "description": "desc"}
+        {
+            "name": "Episode Title",
+            "show": {"name": "Show Name"},
+            "description": "desc",
+            "release_date": "2026-07-10",
+        }
     ).encode()
     monkeypatch.setattr(
         spotify_client,
@@ -98,6 +103,7 @@ def test_fetch_episode_metadata_success(monkeypatch):
         "title": "Episode Title",
         "show_name": "Show Name",
         "description": "desc",
+        "release_date": "2026-07-10",
     }
 
 

@@ -9,7 +9,7 @@ import pipeline
         ("https://www.youtube.com/watch?v=abc", "youtube"),
         ("https://example.com/a", "generic_link"),
         ("https://vimeo.com/12345", "generic_link"),
-        ("https://overcast.fm/+abc", "generic_link"),
+        ("https://overcast.fm/+abc", "overcast"),
         ("https://open.spotify.com/episode/abc123", "spotify"),
         ("https://open.spotify.com/show/abc123", "generic_link"),
         ("https://x.test/a.mp3", "generic_link"),
@@ -206,6 +206,26 @@ def test_find_sidecar_supports_common_extensions(tmp_path):
 
 def test_resolve_overcast_episode(monkeypatch):
     page = b'<a href="https://feed.example/rss"><img src="/img/badge-rss.svg"></a><h2 class="title">Episode One</h2>'
+    rss = (
+        b"<rss><channel><item><title>Episode One</title>"
+        b'<enclosure url="https://cdn.example/e.mp3" />'
+        b"<pubDate>Fri, 10 Jul 2026 14:15:00 GMT</pubDate>"
+        b"</item></channel></rss>"
+    )
+    responses = iter((page, rss))
+    monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
+    monkeypatch.setattr(
+        pipeline, "_safe_urlopen_with_validation", lambda url, timeout: next(responses)
+    )
+    assert pipeline.resolve_overcast_episode("https://overcast.fm/+abc") == (
+        "Episode One",
+        "https://cdn.example/e.mp3",
+        "2026-07-10",
+    )
+
+
+def test_resolve_overcast_episode_missing_pubdate_is_none(monkeypatch):
+    page = b'<a href="https://feed.example/rss"><img src="/img/badge-rss.svg"></a><h2 class="title">Episode One</h2>'
     rss = b'<rss><channel><item><title>Episode One</title><enclosure url="https://cdn.example/e.mp3" /></item></channel></rss>'
     responses = iter((page, rss))
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
@@ -215,6 +235,7 @@ def test_resolve_overcast_episode(monkeypatch):
     assert pipeline.resolve_overcast_episode("https://overcast.fm/+abc") == (
         "Episode One",
         "https://cdn.example/e.mp3",
+        None,
     )
 
 

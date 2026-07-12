@@ -102,6 +102,7 @@ _FEED_XML = b"""<rss xmlns:podcast="https://podcastindex.org/namespace/1.0">
     <title>Episode One</title>
     <enclosure url="https://cdn.example/e1.mp3" />
     <podcast:transcript url="https://cdn.example/e1.srt" type="application/srt" />
+    <pubDate>Fri, 10 Jul 2026 14:15:00 GMT</pubDate>
   </item>
   <item>
     <title>Episode Two</title>
@@ -203,6 +204,30 @@ def test_get_enclosure_url_missing():
     root = podcast_rss.ET.fromstring(xml)
     item = root.findall(".//item")[0]
     assert podcast_rss.get_enclosure_url(item) is None
+
+
+def test_get_published_at():
+    xml = (
+        b"<rss><channel><item><title>E</title>"
+        b"<pubDate>Fri, 10 Jul 2026 14:15:00 GMT</pubDate>"
+        b"</item></channel></rss>"
+    )
+    root = podcast_rss.ET.fromstring(xml)
+    item = root.findall(".//item")[0]
+    assert podcast_rss.get_published_at(item) == "2026-07-10"
+
+
+def test_get_published_at_missing():
+    root = podcast_rss.ET.fromstring(_FEED_XML)
+    item = root.findall(".//item")[1]
+    assert podcast_rss.get_published_at(item) is None
+
+
+def test_get_published_at_malformed_returns_none():
+    xml = b"<rss><channel><item><title>E</title><pubDate>not a date</pubDate></item></channel></rss>"
+    root = podcast_rss.ET.fromstring(xml)
+    item = root.findall(".//item")[0]
+    assert podcast_rss.get_published_at(item) is None
 
 
 def test_fetch_and_normalize_transcript_srt(monkeypatch):
@@ -324,7 +349,9 @@ def test_resolve_episode_from_rss_transcript_found(monkeypatch):
     result = podcast_rss.resolve_episode_from_rss("My Show", "Episode One")
     assert result["feed_url"] == "https://feed.example/rss"
     assert result["transcript"] == ("srt", "1\n...\nHi\n", "Hi")
+    assert result["transcript_url"] == "https://cdn.example/e1.srt"
     assert result["enclosure_url"] == "https://cdn.example/e1.mp3"
+    assert result["published_at"] == "2026-07-10"
 
 
 def test_resolve_episode_from_rss_no_transcript_falls_back_to_enclosure(monkeypatch):
@@ -337,7 +364,9 @@ def test_resolve_episode_from_rss_no_transcript_falls_back_to_enclosure(monkeypa
     )
     result = podcast_rss.resolve_episode_from_rss("My Show", "Episode Two")
     assert result["transcript"] is None
+    assert result["transcript_url"] is None
     assert result["enclosure_url"] == "https://cdn.example/e2.mp3"
+    assert result["published_at"] is None
 
 
 def test_resolve_episode_from_rss_no_feed_found(monkeypatch):

@@ -27,6 +27,7 @@ import json
 import logging
 import re
 from difflib import get_close_matches
+from email.utils import parsedate_to_datetime
 from urllib.parse import quote, urljoin
 
 import defusedxml.ElementTree as ET
@@ -181,6 +182,24 @@ def get_enclosure_url(item) -> str | None:
     return enclosure.get("url") or None
 
 
+def get_published_at(item) -> str | None:
+    """
+    Extract and normalize an RSS item's <pubDate> (standard RFC 2822 format)
+    to an ISO YYYY-MM-DD date.
+
+    Returns:
+        str | None: The publish date, or None if the item has no <pubDate>
+        or it can't be parsed.
+    """
+    pub_date_el = item.find("pubDate")
+    if pub_date_el is None or not pub_date_el.text:
+        return None
+    try:
+        return parsedate_to_datetime(pub_date_el.text.strip()).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------
 # Transcript normalization - every format below is converted into the same
 # (file_extension, raw_body_text, plain_text) shape pipeline.py already
@@ -323,8 +342,9 @@ def resolve_episode_from_rss(show_name: str, episode_title: str) -> dict | None:
 
     Returns:
         dict | None: {"feed_url", "transcript": (ext, raw_body, plain_text) | None,
-        "enclosure_url": str | None}, or None if the feed/episode couldn't be
-        found at all.
+        "transcript_url": str | None, "enclosure_url": str | None,
+        "published_at": str | None (YYYY-MM-DD, from the item's <pubDate>)},
+        or None if the feed/episode couldn't be found at all.
     """
     feed_url = discover_feed_via_itunes(show_name)
     if not feed_url:
@@ -336,13 +356,17 @@ def resolve_episode_from_rss(show_name: str, episode_title: str) -> dict | None:
         return None
 
     transcript = None
+    transcript_url = None
     for candidate in find_transcript_candidates(item, feed_url):
         transcript = fetch_and_normalize_transcript(candidate)
         if transcript is not None:
+            transcript_url = candidate["url"]
             break
 
     return {
         "feed_url": feed_url,
         "transcript": transcript,
+        "transcript_url": transcript_url,
         "enclosure_url": get_enclosure_url(item),
+        "published_at": get_published_at(item),
     }

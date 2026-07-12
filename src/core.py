@@ -676,6 +676,32 @@ def slugify(title: str) -> str:
     return slug[:80] or "untitled"
 
 
+# Characters illegal (or awkward) in filenames on at least one of
+# macOS/Windows/Linux: path separators, Windows-reserved punctuation, and
+# control characters. Unlike slugify(), everything else - spaces, case,
+# unicode, ordinary punctuation - is left exactly as the source titled it.
+_ILLEGAL_FILENAME_CHARS_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def safe_filename(title: str, max_length: int = 200) -> str:
+    """
+    Sanitize a title for use as a filename while preserving its original
+    spacing and capitalization.
+
+    Parameters:
+        title (str): Title to sanitize.
+        max_length (int): Maximum filename length (before any extension).
+
+    Returns:
+        str: The title with only filesystem-illegal characters removed and
+        whitespace collapsed, or "untitled" when nothing usable remains.
+    """
+    cleaned = _ILLEGAL_FILENAME_CHARS_RE.sub("", title)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.rstrip(". ")  # trailing dot/space is invalid on Windows
+    return cleaned[:max_length] or "untitled"
+
+
 def build_note(
     title: str,
     source_type: str,
@@ -686,6 +712,7 @@ def build_note(
     summary: str,
     content_tags: list[str] | None = None,
     extra_frontmatter: dict[str, str] | None = None,
+    redirect_url: str | None = None,
 ) -> str:
     """
     Build an Obsidian note with YAML frontmatter, source links, transcript metadata, and a summary.
@@ -704,6 +731,10 @@ def build_note(
             or RSS feed URL) rendered as extra `key: value` lines. Kept
             generic rather than provider-specific so new sources don't
             require changes here.
+        redirect_url (str | None): The actual URL content was fetched from,
+            when the source page doesn't host it directly (e.g. an Overcast
+            or Spotify episode page resolving to the podcast's real RSS
+            audio/transcript URL). Omitted when equal to source_url.
 
     Returns:
         str: Complete Obsidian note in Markdown format.
@@ -715,9 +746,13 @@ def build_note(
         if tag not in tags:
             tags.append(tag)
 
+    show_redirect = bool(redirect_url) and redirect_url != source_url
+
     lines = ["---", f'title: "{title}"', f"source_type: {source_type}"]
     if source_url:
         lines.append(f"source_url: {source_url}")
+    if show_redirect:
+        lines.append(f"redirect_url: {redirect_url}")
     if video_id:
         lines.append(f"video_id: {video_id}")
     if published_at:
@@ -736,6 +771,8 @@ def build_note(
     ]
     if source_url:
         lines.append(f"- **Source:** [{source_url}]({source_url})")
+    if show_redirect:
+        lines.append(f"- **Redirects to:** [{redirect_url}]({redirect_url})")
     lines.append(f"- **Transcript:** [View on GitHub]({subtitle_github_url})")
     lines += ["", "## Summary", "", summary, ""]
     return "\n".join(lines)

@@ -58,6 +58,7 @@ from core import (
     ensure_repo,
     load_config,
     resolve_secret,
+    safe_filename,
     slugify,
     srt_to_plain_text,
     validate_public_url,
@@ -100,15 +101,14 @@ class NoTranscriptAvailableError(PipelineError):
 
 def detect_input_type(raw_input: str) -> str:
     """
-    Classifies an HTTP(S) URL as YouTube, a Spotify podcast episode, or a
-    generic link (any other yt-dlp-supported URL, including Overcast, which
-    is handled as a fallback within the generic-link path).
+    Classifies an HTTP(S) URL as YouTube, Overcast, a Spotify podcast
+    episode, or a generic link (any other yt-dlp-supported URL).
 
     Parameters:
         raw_input (str): HTTP(S) URL to classify.
 
     Returns:
-        str: `"youtube"`, `"spotify"`, or `"generic_link"`.
+        str: `"youtube"`, `"overcast"`, `"spotify"`, or `"generic_link"`.
 
     Raises:
         ValueError: If the input is not a hosted HTTP(S) URL.
@@ -122,6 +122,8 @@ def detect_input_type(raw_input: str) -> str:
         host = parsed.hostname.lower()
         if YOUTUBE_HOST_RE.search(host):
             return "youtube"
+        if OVERCAST_HOST_RE.search(host):
+            return "overcast"
         # Only Spotify *episode* URLs get provider-specific handling - show
         # pages and music tracks fall through to generic_link, where yt-dlp
         # (which doesn't support Spotify) will simply fail to find anything,
@@ -269,6 +271,30 @@ def fetch_title_via_ytdlp(url: str) -> str | None:
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().splitlines()[0]
+    return None
+
+
+def fetch_published_at_via_ytdlp(url: str) -> str | None:
+    """Fetch the upload/release date yt-dlp reports for a URL.
+
+    Parameters:
+        url (str): The media URL to inspect.
+
+    Returns:
+        str | None: An ISO `YYYY-MM-DD` date, or `None` if yt-dlp can't
+        provide one (unsupported site, no date in the source metadata, etc.)
+    """
+    result = subprocess.run(
+        ["yt-dlp", "--skip-download", "--print", "%(upload_date)s", url],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    raw = result.stdout.strip().splitlines()[0].strip()
+    if len(raw) == 8 and raw.isdigit():
+        return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
     return None
 
 
@@ -489,16 +515,19 @@ def _safe_urlopen_with_validation(
     raise ValueError(f"Too many redirects (>{max_redirects}) when fetching {url}")
 
 
-def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
+def resolve_overcast_episode(url: str) -> tuple[str, str, str | None] | None:
     """
-    Resolve an Overcast episode page to its title and audio enclosure URL.
+    Resolve an Overcast episode page to its title, audio enclosure URL, and
+    (if the feed's matched item has one) publish date.
 
     Parameters:
         url (str): Overcast episode page URL.
 
     Returns:
-        tuple[str, str] | None: Episode title and validated enclosure URL, or None
-        if the page, feed, or matching episode cannot be resolved.
+        tuple[str, str, str | None] | None: Episode title, validated
+        enclosure URL, and an ISO `YYYY-MM-DD` publish date (or `None` if
+        the feed item has no `<pubDate>`) - or `None` entirely if the page,
+        feed, or matching episode cannot be resolved.
     """
     try:
         page_html = _safe_urlopen_with_validation(url, timeout=30).decode(
@@ -517,7 +546,7 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
         feed_xml = _safe_urlopen_with_validation(feed_url, timeout=30)
         root = ET.fromstring(feed_xml)
 
-        episodes = {}
+        items_by_title = {}
         for item in root.findall(".//item"):
             item_title_el = item.find("title")
             enclosure_el = item.find("enclosure")
@@ -526,18 +555,19 @@ def resolve_overcast_episode(url: str) -> tuple[str, str] | None:
             item_title = (item_title_el.text or "").strip()
             mp3_url = enclosure_el.get("url")
             if item_title and mp3_url:
-                episodes[item_title] = mp3_url
+                items_by_title[item_title] = item
 
-        if episode_title in episodes:
-            mp3_url = episodes[episode_title]
-            validate_public_url(mp3_url)
-            return episode_title, mp3_url
+        matched_item = items_by_title.get(episode_title)
+        if matched_item is None:
+            close = get_close_matches(
+                episode_title, items_by_title.keys(), n=1, cutoff=0.8
+            )
+            matched_item = items_by_title[close[0]] if close else None
 
-        close = get_close_matches(episode_title, episodes.keys(), n=1, cutoff=0.8)
-        if close:
-            mp3_url = episodes[close[0]]
+        if matched_item is not None:
+            mp3_url = matched_item.find("enclosure").get("url")
             validate_public_url(mp3_url)
-            return episode_title, mp3_url
+            return episode_title, mp3_url, podcast_rss.get_published_at(matched_item)
 
         log.warning(
             "Overcast: no matching feed item for %r in %s.", episode_title, feed_url
@@ -582,7 +612,9 @@ class ProviderResolution:
 
     title: str
     source_url: str | None = None
+    redirect_url: str | None = None
     video_id: str | None = None
+    published_at: str | None = None
     raw_transcript_body: str | None = None
     transcript_text: str | None = None
     transcript_ext: str = "srt"
@@ -627,6 +659,9 @@ def _resolve_youtube(
     video_id = item_hint.get("video_id") or extract_youtube_video_id(raw_input)
     source_url = f"https://www.youtube.com/watch?v={video_id}"
     title = item_hint.get("title") or fetch_title_via_ytdlp(source_url) or video_id
+    published_at = item_hint.get("published_at") or fetch_published_at_via_ytdlp(
+        source_url
+    )
 
     raw = text = lang = None
     subs_result = download_subtitles(video_id, _subtitle_languages(cfg), workdir)
@@ -648,6 +683,7 @@ def _resolve_youtube(
         title=title,
         source_url=source_url,
         video_id=video_id,
+        published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
         lang=lang,
@@ -663,60 +699,44 @@ def _resolve_generic_link(
     bridge_token: str,
     model_id: str,
 ) -> ProviderResolution:
-    """Any yt-dlp-supported URL that isn't YouTube or a Spotify episode.
+    """Any yt-dlp-supported URL that isn't YouTube, Overcast, or a Spotify
+    episode.
 
     Tries embedded/manual/automatic subtitles first (same as YouTube), then
-    falls back to downloading audio and transcribing it. Overcast is
-    special-cased only to resolve the page to its real RSS mp3 enclosure -
-    from there it goes through the exact same download-then-transcribe tail
-    as any other generic link.
+    falls back to downloading audio and transcribing it.
     """
     source_url = raw_input
-    host = (urlparse(raw_input).hostname or "").lower()
     title = item_hint.get("title")
-
-    overcast_resolved = (
-        resolve_overcast_episode(raw_input) if OVERCAST_HOST_RE.search(host) else None
+    published_at = item_hint.get("published_at") or fetch_published_at_via_ytdlp(
+        raw_input
     )
 
+    validate_public_url(raw_input)
+
+    if title is None:
+        title = fetch_title_via_ytdlp(raw_input)
+
     raw = text = lang = None
-    if overcast_resolved is not None:
-        # Podcasts have no video component and no synced subtitles - go
-        # straight to the real mp3 enclosure and transcribe it.
-        resolved_title, mp3_url = overcast_resolved
-        if title is None:
-            title = resolved_title
-        media_path = download_direct_file(mp3_url, workdir)
-        raw, text = bridge_client.transcribe_audio(
-            media_path, model_id, bridge_url, bridge_token
-        )
-        lang = "parakeet"
+    subs_result = _ytdlp_download_subs(
+        raw_input, "transcript", _subtitle_languages(cfg), workdir
+    )
+    if subs_result is not None:
+        srt_path, lang = subs_result
+        raw = srt_path.read_text(encoding="utf-8", errors="ignore")
+        text = srt_to_plain_text(srt_path)
     else:
-        validate_public_url(raw_input)
-
-        if title is None:
-            title = fetch_title_via_ytdlp(raw_input)
-
-        subs_result = _ytdlp_download_subs(
-            raw_input, "transcript", _subtitle_languages(cfg), workdir
+        media_path = (
+            download_direct_file(raw_input, workdir)
+            if is_direct_media_url(raw_input)
+            else download_audio_via_ytdlp(raw_input, workdir)
         )
-        if subs_result is not None:
-            srt_path, lang = subs_result
-            raw = srt_path.read_text(encoding="utf-8", errors="ignore")
-            text = srt_to_plain_text(srt_path)
-        else:
-            media_path = (
-                download_direct_file(raw_input, workdir)
-                if is_direct_media_url(raw_input)
-                else download_audio_via_ytdlp(raw_input, workdir)
+        if media_path is not None:
+            raw, text = bridge_client.transcribe_audio(
+                media_path, model_id, bridge_url, bridge_token
             )
-            if media_path is not None:
-                raw, text = bridge_client.transcribe_audio(
-                    media_path, model_id, bridge_url, bridge_token
-                )
-                lang = "parakeet"
-                if title is None:
-                    title = media_path.stem
+            lang = "parakeet"
+            if title is None:
+                title = media_path.stem
 
     if title is None:
         title = raw_input[:80]
@@ -724,9 +744,50 @@ def _resolve_generic_link(
     return ProviderResolution(
         title=title,
         source_url=source_url,
+        published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
         lang=lang,
+    )
+
+
+def _resolve_overcast(
+    raw_input: str,
+    item_hint: dict,
+    workdir: Path,
+    bridge_url: str,
+    bridge_token: str,
+    model_id: str,
+) -> ProviderResolution:
+    """Overcast episode page: resolve_overcast_episode() finds the real RSS
+    mp3 enclosure (Overcast doesn't host audio itself), then transcribes it
+    through the same Parakeet path as any other audio source."""
+    title = item_hint.get("title")
+    published_at = item_hint.get("published_at")
+
+    overcast_resolved = resolve_overcast_episode(raw_input)
+    if overcast_resolved is None:
+        log.warning("Could not resolve Overcast episode %s", raw_input)
+        return ProviderResolution(title=title or raw_input[:80], source_url=raw_input)
+
+    resolved_title, mp3_url, resolved_published_at = overcast_resolved
+    if title is None:
+        title = resolved_title
+    if published_at is None:
+        published_at = resolved_published_at
+
+    media_path = download_direct_file(mp3_url, workdir)
+    raw, text = bridge_client.transcribe_audio(
+        media_path, model_id, bridge_url, bridge_token
+    )
+    return ProviderResolution(
+        title=title,
+        source_url=raw_input,
+        redirect_url=mp3_url,
+        published_at=published_at,
+        raw_transcript_body=raw,
+        transcript_text=text,
+        lang="parakeet",
     )
 
 
@@ -748,6 +809,7 @@ def _resolve_spotify(
     reports it, same as any other source that comes up empty.
     """
     title = item_hint.get("title")
+    published_at = item_hint.get("published_at")
 
     metadata = spotify_client.resolve_episode_metadata(raw_input, cfg)
     if metadata is None:
@@ -761,6 +823,10 @@ def _resolve_spotify(
     if title is None:
         title = metadata.get("title") or raw_input[:80]
     show_name = metadata.get("show_name")
+    # RSS's <pubDate> (below) is preferred - a consistently full date, unlike
+    # Spotify's release_date whose precision varies by show - but fall back
+    # to it now in case RSS resolution fails entirely.
+    published_at = published_at or metadata.get("release_date")
 
     rss_result = (
         podcast_rss.resolve_episode_from_rss(show_name, title) if show_name else None
@@ -772,8 +838,13 @@ def _resolve_spotify(
             show_name,
             title,
         )
-        return ProviderResolution(title=title, source_url=raw_input)
+        return ProviderResolution(
+            title=title, source_url=raw_input, published_at=published_at
+        )
 
+    published_at = (
+        item_hint.get("published_at") or rss_result.get("published_at") or published_at
+    )
     extra_frontmatter = {"podcast_feed_url": rss_result["feed_url"]}
     transcript = rss_result["transcript"]
     if transcript is not None:
@@ -781,6 +852,8 @@ def _resolve_spotify(
         return ProviderResolution(
             title=title,
             source_url=raw_input,
+            redirect_url=rss_result.get("transcript_url"),
+            published_at=published_at,
             raw_transcript_body=raw,
             transcript_text=text,
             transcript_ext=ext,
@@ -792,7 +865,10 @@ def _resolve_spotify(
     if enclosure_url is None:
         log.warning("No transcript or audio enclosure found in RSS feed for %r.", title)
         return ProviderResolution(
-            title=title, source_url=raw_input, extra_frontmatter=extra_frontmatter
+            title=title,
+            source_url=raw_input,
+            published_at=published_at,
+            extra_frontmatter=extra_frontmatter,
         )
 
     # No published transcript - fall back to the podcast's own original RSS
@@ -805,6 +881,8 @@ def _resolve_spotify(
     return ProviderResolution(
         title=title,
         source_url=raw_input,
+        redirect_url=enclosure_url,
+        published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
         lang="parakeet",
@@ -866,8 +944,6 @@ def process_input(
             "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
         )
 
-    published_at = item_hint.get("published_at")
-
     with tempfile.TemporaryDirectory(prefix="pipeline-") as tmp:
         workdir = Path(tmp)
 
@@ -880,6 +956,10 @@ def process_input(
             resolution = _resolve_youtube(
                 raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
             )
+        elif source_type == "overcast":
+            resolution = _resolve_overcast(
+                raw_input, item_hint, workdir, bridge_url, bridge_token, model_id
+            )
         elif source_type == "spotify":
             resolution = _resolve_spotify(
                 raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
@@ -891,7 +971,9 @@ def process_input(
 
         title = resolution.title
         source_url = resolution.source_url
+        redirect_url = resolution.redirect_url
         video_id = resolution.video_id
+        published_at = resolution.published_at
         raw_srt_body = resolution.raw_transcript_body
         transcript_text = resolution.transcript_text
         transcript_ext = resolution.transcript_ext
@@ -958,7 +1040,7 @@ def process_input(
 
     note_dir = vault_repo / cfg["github"]["vault_notes_dir"]
     note_dir.mkdir(parents=True, exist_ok=True)
-    note_path = note_dir / f"{slug}.md"
+    note_path = note_dir / f"{safe_filename(title)}.md"
     note_path.write_text(
         build_note(
             title,
@@ -970,6 +1052,7 @@ def process_input(
             summary,
             content_tags,
             extra_frontmatter=extra_frontmatter,
+            redirect_url=redirect_url,
         ),
         encoding="utf-8",
     )

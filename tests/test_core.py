@@ -21,6 +21,24 @@ def test_slugify(title, expected):
     assert core.slugify(title) == expected
 
 
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        # Spaces and capitalization are preserved exactly, unlike slugify().
+        ("ChatGPT Just Became a Work Agent", "ChatGPT Just Became a Work Agent"),
+        ("Title: A Subtitle", "Title A Subtitle"),
+        ("path/to\\thing", "pathtothing"),
+        ('Weird <>:"|?* chars', "Weird chars"),
+        ("  Trimmed  ", "Trimmed"),
+        ("Trailing dot.", "Trailing dot"),
+        ("   ", "untitled"),
+        ("a" * 250, "a" * 200),
+    ],
+)
+def test_safe_filename(title, expected):
+    assert core.safe_filename(title) == expected
+
+
 def test_state_round_trip_and_defaults(tmp_path):
     path = tmp_path / "state.json"
     assert core.load_state(str(path)) == {
@@ -121,6 +139,50 @@ def test_build_note_contains_metadata():
     assert (
         "# Title" in note and "youtube" in note and "ai" in note and "summary" in note
     )
+
+
+def test_build_note_shows_redirect_url_when_different_from_source():
+    note = core.build_note(
+        "Title",
+        "overcast",
+        "https://overcast.fm/+abc",
+        None,
+        None,
+        "https://git/sub.srt",
+        "summary",
+        redirect_url="https://cdn.example/e.mp3",
+    )
+    assert "redirect_url: https://cdn.example/e.mp3" in note
+    assert "- **Redirects to:** [https://cdn.example/e.mp3]" in note
+
+
+def test_build_note_omits_redirect_url_when_same_as_source():
+    note = core.build_note(
+        "Title",
+        "youtube",
+        "https://youtu.be/x",
+        "x",
+        None,
+        "https://git/sub.srt",
+        "summary",
+        redirect_url="https://youtu.be/x",
+    )
+    assert "redirect_url" not in note
+    assert "Redirects to" not in note
+
+
+def test_build_note_omits_redirect_url_when_absent():
+    note = core.build_note(
+        "Title",
+        "youtube",
+        "https://youtu.be/x",
+        "x",
+        None,
+        "https://git/sub.srt",
+        "summary",
+    )
+    assert "redirect_url" not in note
+    assert "Redirects to" not in note
 
 
 def test_private_ip_classification():
