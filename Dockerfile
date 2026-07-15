@@ -2,10 +2,9 @@
 #
 # Image for the containerized part of the pipeline: server.py (webhook
 # mode) and fetch_playlist.py (playlist polling, run with --loop). Does
-# NOT include Parakeet/MLX or the Claude CLI - those stay on the host
-# (Apple Silicon Mac, subscription-auth'd claude login) and are reached
-# over HTTP via host_bridge.py. See docker/docker-compose.yml and
-# README.md's "Containerized deployment" section.
+# NOT include Parakeet/MLX - transcription stays on the remote Apple Silicon
+# Mac and is reached over HTTP via host_bridge.py. Claude Code runs here,
+# using a Coolify-injected OAuth token.
 #
 # No 1Password CLI in this image, deliberately: secrets are resolved on
 # the host (already authenticated via the desktop app's CLI integration)
@@ -21,9 +20,17 @@
 
 FROM python:3.11-slim
 
+ARG CLAUDE_CODE_VERSION
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg git ca-certificates \
+        ffmpeg git ca-certificates nodejs npm \
     && rm -rf /var/lib/apt/lists/*
+
+# Keep the CLI version deterministic. Update this build argument deliberately
+# after validating a new release; automatic updates are disabled below.
+RUN test -n "$CLAUDE_CODE_VERSION" \
+    && npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -37,9 +44,12 @@ ENV UV_NO_DEV=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked
 
-COPY src/core.py src/pipeline.py src/fetch_playlist.py src/server.py src/bridge_client.py src/youtube_auth.py src/podcast_rss.py src/spotify_client.py ./src/
+COPY src/core.py src/pipeline.py src/fetch_playlist.py src/server.py src/bridge_client.py src/claude_client.py src/bridge_monitor.py src/youtube_auth.py src/podcast_rss.py src/spotify_client.py ./src/
+COPY prompts ./prompts/
+COPY sandbox/claude.sb.tmpl ./sandbox/claude.sb.tmpl
 
-ENV PATH="/app/.venv/bin:${PATH}"
+ENV PATH="/app/.venv/bin:${PATH}" \
+    DISABLE_AUTOUPDATER=1
 
 # Run as an unprivileged user. Bind-mounted state, lock, token, and repository
 # paths must be writable by this UID/GID (configurable at build time).
@@ -51,10 +61,11 @@ ARG PIPELINE_GID=1000
 # since this path is otherwise never created before that first mount, it
 # would default to root:root (and the app can't write its lock file there).
 RUN groupadd --gid "$PIPELINE_GID" pipeline \
-    && useradd --uid "$PIPELINE_UID" --gid pipeline --no-create-home pipeline \
-    && mkdir -p /app/.pipeline-runtime \
+    && useradd --uid "$PIPELINE_UID" --gid pipeline --create-home pipeline \
+    && mkdir -p /app/.pipeline-runtime /app/data \
     && chown -R pipeline:pipeline /app
 USER pipeline
+ENV HOME=/home/pipeline
 
 # Default: run the webhook server, bound to all interfaces (the compose
 # network, not the host) since it's inside a container now. Override

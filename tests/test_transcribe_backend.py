@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 try:
     import transcribe_backend as tb
 
@@ -63,3 +65,23 @@ def test_model_cache_and_transcribe(monkeypatch, tmp_path):
     audio = tmp_path / "a.wav"
     audio.write_bytes(b"x")
     assert tb.transcribe_audio(audio, "model")[1] == "Hi"
+
+
+def test_model_load_is_offline_and_preload_is_explicit(monkeypatch):
+    tb._MODEL_CACHE.clear()
+    observed = []
+
+    def load(model_id):
+        observed.append(tb.hf_constants.HF_HUB_OFFLINE)
+        if tb.hf_constants.HF_HUB_OFFLINE:
+            raise OSError("not cached")
+        return object()
+
+    monkeypatch.setattr(tb.parakeet_mlx, "from_pretrained", load)
+    with pytest.raises(RuntimeError, match="preload_transcription_model"):
+        tb.get_model("model")
+    assert observed == [True]
+
+    tb.preload_model("model")
+    assert observed == [True, False]
+    assert tb.get_model("model") is tb._MODEL_CACHE["model"]

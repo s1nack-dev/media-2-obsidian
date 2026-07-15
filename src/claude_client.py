@@ -1,8 +1,8 @@
 """
 Summarization and tagging via the Claude Code CLI (uses your subscription,
-not API billing). Host-only: needs the Claude CLI's subscription OAuth
-session, tied to this Mac's keychain/session, so this module is only ever
-imported by host_bridge.py - never bundled into the container image.
+not API billing). This runs in the pipeline process, including the Coolify
+container, and receives its non-interactive OAuth token through
+``CLAUDE_CODE_OAUTH_TOKEN``.
 """
 
 import logging

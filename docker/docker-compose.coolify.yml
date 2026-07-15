@@ -1,0 +1,74 @@
+# Deploy this Compose file in Coolify. Tailscale is intentionally NOT a
+# container: install it as a system service on the Coolify host instead.
+# Cloudflare Tunnel reaches pipeline-server over this private Compose network;
+# the pipeline reaches the remote Mac through the host's Tailscale route.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set in Coolify}
+    networks: [pipeline]
+
+  pipeline-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        PIPELINE_UID: "1000"
+        PIPELINE_GID: "1000"
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:?pin in Coolify}
+    image: youtube-obsidian-pipeline:coolify
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["python", "src/server.py", "--config", "config.yaml", "--host", "0.0.0.0"]
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set in Coolify}
+      BRIDGE_AUTH_TOKEN: ${BRIDGE_AUTH_TOKEN:?set in Coolify}
+      WEBHOOK_AUTH_TOKEN: ${WEBHOOK_AUTH_TOKEN:?set in Coolify}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?set in Coolify}
+      BRIDGE_URL: ${BRIDGE_URL:?set to Mac Tailscale Serve URL}
+      PIPELINE_LOCK_FILE: /app/.pipeline-runtime/pipeline.lock
+    volumes:
+      - pipeline-runtime:/app/.pipeline-runtime
+      - pipeline-data:/app/data
+      - ../config.coolify.yaml:/app/config.yaml:ro
+    networks: [pipeline]
+
+  pipeline-fetch:
+    image: youtube-obsidian-pipeline:coolify
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["python", "src/fetch_playlist.py", "--config", "config.yaml", "--loop"]
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?set in Coolify}
+      BRIDGE_AUTH_TOKEN: ${BRIDGE_AUTH_TOKEN:?set in Coolify}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?set in Coolify}
+      BRIDGE_URL: ${BRIDGE_URL:?set to Mac Tailscale Serve URL}
+      PIPELINE_LOCK_FILE: /app/.pipeline-runtime/pipeline.lock
+      PIPELINE_STATE_FILE: /app/.pipeline-runtime/state.json
+    volumes:
+      - pipeline-runtime:/app/.pipeline-runtime
+      - pipeline-data:/app/data
+      - ../config.coolify.yaml:/app/config.yaml:ro
+    networks: [pipeline]
+
+  bridge-monitor:
+    image: youtube-obsidian-pipeline:coolify
+    user: "1000:1000"
+    restart: unless-stopped
+    command: ["python", "src/bridge_monitor.py", "--config", "config.yaml", "--state-file", "/app/.pipeline-runtime/bridge-monitor.json"]
+    environment:
+      BRIDGE_URL: ${BRIDGE_URL:?set to Mac Tailscale Serve URL}
+    volumes:
+      - pipeline-runtime:/app/.pipeline-runtime
+      - ../config.coolify.yaml:/app/config.yaml:ro
+    networks: [pipeline]
+
+networks:
+  pipeline:
+
+volumes:
+  pipeline-runtime:
+  pipeline-data:

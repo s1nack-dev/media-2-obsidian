@@ -12,15 +12,13 @@ Processes ONE input at a time:
      link (Spotify episodes, via podcast_rss.py), a sidecar .srt file (local
      files), otherwise sends audio to host_bridge.py for transcription
      (Parakeet/MLX - can't run in this container, see bridge_client.py).
-  3. Summarizes the transcript, also via host_bridge.py (claude -p, host
-     subscription auth - also can't run in this container).
+  3. Summarizes and tags the transcript locally with Claude Code (the
+     container receives its OAuth token through the environment).
   4. Commits the transcript file to your subtitles GitHub repo.
   5. Commits a new Obsidian markdown note to your vault GitHub repo.
 
-This module itself has no MLX/parakeet or claude-CLI dependency - it's
-meant to run in the pipeline container. Only host_bridge.py (run natively
-on the Mac) needs those. See CLAUDE.md's "Webhook mode" / "Containerized
-deployment" sections for the full architecture.
+This module has no MLX/parakeet dependency. In the Coolify image it does
+include Claude Code; only host_bridge.py on the remote Mac needs MLX.
 
 Usable two ways:
   - Standalone CLI: `python pipeline.py --input <path-or-url> --config config.yaml`
@@ -48,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 import defusedxml.ElementTree as ET
 
 import bridge_client
+from claude_client import generate_tags_with_claude, summarize_with_claude
 import podcast_rss
 import spotify_client
 from core import (
@@ -83,6 +82,18 @@ DIRECT_MEDIA_EXTENSIONS = {
     ".m4a",
     ".flac",
 }
+
+
+def _resolve_claude_oauth_token(cfg: dict) -> str | None:
+    """Resolve Claude Code auth in the pipeline trust zone only."""
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        return token
+    oauth_token_ref = (cfg.get("claude") or {}).get("oauth_token_op_ref")
+    if oauth_token_ref:
+        return resolve_secret("CLAUDE_CODE_OAUTH_TOKEN", oauth_token_ref)
+    return None
+
 
 # SSRF protection: explicit allowlist of trusted extractors for yt-dlp.
 # Excludes 'generic' extractor which can fetch arbitrary embedded URLs.
@@ -1058,9 +1069,15 @@ def process_input(
 
     log.info("Got transcript for %r via %s (%s)", title, source_type, lang)
 
-    summary = bridge_client.summarize(transcript_text, bridge_url, bridge_token)
-    content_tags = bridge_client.generate_tags(
-        transcript_text, bridge_url, bridge_token
+    claude_cfg = cfg.get("claude") or {}
+    claude_cmd = claude_cfg.get("command", "claude")
+    # Coolify injects this directly. Native deployments can retain the
+    # 1Password reference for compatibility, but the remote Mac bridge never
+    # receives this credential.
+    claude_oauth_token = _resolve_claude_oauth_token(cfg)
+    summary = summarize_with_claude(claude_cmd, transcript_text, claude_oauth_token)
+    content_tags = generate_tags_with_claude(
+        claude_cmd, transcript_text, claude_oauth_token
     )
 
     if github_token is None:

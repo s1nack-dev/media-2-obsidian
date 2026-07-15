@@ -4,13 +4,10 @@ Small HTTP server exposing pipeline.process_input() over the network, meant
 to sit behind a Cloudflare Tunnel (cloudflared) so a POST to a public URL
 can trigger processing of a YouTube URL or other link.
 
-Runs either natively on the Mac host or in a container (see
-docker/docker-compose.yml) - unlike host_bridge.py, this has no
-MLX/parakeet or claude-CLI dependency itself (process_input() talks to
-host_bridge.py over HTTP for both via bridge_client.py), so it isn't
-tied to running on the host. If containerized, host_bridge.py still has
-to run natively on the Mac and be reachable via host.docker.internal -
-see README.md's "Containerized deployment" section.
+Runs either natively or in a container. It sends only transcription audio to
+host_bridge.py; the pipeline process invokes Claude Code directly for summary
+and tags. A Coolify deployment reaches the remote Mac through a private
+Tailscale Serve URL; see docs/coolify-remote-mac.md.
 
 Requests are queued and handled one at a time by a single background
 worker thread: process_input() shares host_bridge.py's cached Parakeet
