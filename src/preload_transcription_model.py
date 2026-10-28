@@ -24,9 +24,9 @@ def main():
         # Must be set before huggingface_hub reads its constants.
         os.environ["HF_HOME"] = args.hf_home
     cfg = load_config(args.config)
-    model_id = (cfg.get("transcription") or {}).get("model")
-    if not model_id:
-        parser.error("config.yaml is missing transcription.model")
+    model_id = (cfg.get("transcription") or {}).get(
+        "model", "mlx-community/parakeet-tdt-0.6b-v3"
+    )
     from transcribe_backend import preload_model
 
     preload_model(model_id)

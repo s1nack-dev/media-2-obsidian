@@ -111,7 +111,11 @@ def resolve_bridge_token(cfg: dict) -> str | None:
     """Resolve the bridge token once at startup, only when the bridge is used."""
     if (cfg.get("transcription") or {}).get("provider", "bridge") != "bridge":
         return None
-    return resolve_secret("BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"])
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    if token:
+        return token
+    bridge_cfg = cfg.get("bridge") or {}
+    return resolve_secret("BRIDGE_AUTH_TOKEN", bridge_cfg["auth_token_op_ref"])
 
 
 def check_localai_container_config(cfg: dict) -> None:
@@ -1179,9 +1183,11 @@ def process_input(
             )
         model_id = trans_cfg.get("model", "mlx-community/parakeet-tdt-0.6b-v3")
         transcription_url = os.environ.get("BRIDGE_URL") or bridge_cfg["url"]
-        transcription_token = bridge_token or resolve_secret(
-            "BRIDGE_AUTH_TOKEN", bridge_cfg["auth_token_op_ref"]
-        )
+        transcription_token = bridge_token or os.environ.get("BRIDGE_AUTH_TOKEN")
+        if not transcription_token:
+            transcription_token = resolve_secret(
+                "BRIDGE_AUTH_TOKEN", bridge_cfg["auth_token_op_ref"]
+            )
     else:
         raise ValueError("transcription.provider must be 'bridge' or 'localai'")
 

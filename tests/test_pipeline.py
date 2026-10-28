@@ -950,6 +950,16 @@ def test_bridge_token_resolved_only_for_bridge(monkeypatch):
     )
 
 
+def test_bridge_token_allows_environment_only_configuration(monkeypatch):
+    monkeypatch.setenv("BRIDGE_AUTH_TOKEN", "from-env")
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_secret",
+        lambda *a: (_ for _ in ()).throw(AssertionError("should not resolve fallback")),
+    )
+    assert pipeline.resolve_bridge_token({}) == "from-env"
+
+
 def test_container_without_localai_url_fails_fast(monkeypatch):
     monkeypatch.delenv("LOCALAI_URL", raising=False)
     monkeypatch.setattr(
