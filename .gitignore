@@ -31,3 +31,6 @@ __pycache__/
 /youtube-obsidian-pipeline/config.yaml
 /youtube-obsidian-pipeline/.env
 /youtube-obsidian-pipeline/.host_bridge.pid
+
+# macOS
+.DS_Store

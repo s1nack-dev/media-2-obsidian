@@ -4,14 +4,12 @@ Small HTTP server exposing pipeline.process_input() over the network, meant
 to sit behind a Cloudflare Tunnel (cloudflared) so a POST to a public URL
 can trigger processing of a YouTube URL or other link.
 
-Runs either natively or in a container. It sends only transcription audio to
-host_bridge.py; the pipeline process invokes Claude Code directly for summary
-and tags. A Coolify deployment reaches the remote Mac through a private
-Tailscale Serve URL; see docs/coolify-remote-mac.md.
+Runs either natively or in a container. The pipeline sends transcription and
+chat requests to the configured LocalAI service.
 
 Requests are queued and handled one at a time by a single background
-worker thread: process_input() shares host_bridge.py's cached Parakeet
-model and the same on-disk git clones across calls, so concurrent
+worker thread: process_input() shares the same on-disk git clones across
+calls, so concurrent
 processing isn't safe. The HTTP server itself stays responsive because
 handling a request only means validating it and enqueueing it - the slow
 work (download, transcribe, summarize, commit) happens in the worker
@@ -27,6 +25,7 @@ no business asking this Mac to read/transcribe an arbitrary local file.
 import argparse
 import json
 import logging
+import os
 import queue
 import secrets
 import sys
@@ -57,14 +56,14 @@ _job_queue: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 MAX_BODY_BYTES = 10_000
 
 
-def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
+def _worker(cfg: dict, github_token: str, localai_api_key: str | None) -> None:
     """
     Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
 
     Parameters:
         cfg (dict): Pipeline and notification configuration.
         github_token (str): Token used for GitHub operations.
-        bridge_token (str): Token used for bridge operations.
+        localai_api_key (str | None): Optional LocalAI API key.
     """
     lock_path = resolve_lock_path(cfg)
     while True:
@@ -91,7 +90,10 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
 
             with pipeline_lock(lock_path):
                 result = process_input(
-                    raw_input, cfg, github_token=github_token, bridge_token=bridge_token
+                    raw_input,
+                    cfg,
+                    github_token=github_token,
+                    localai_api_key=localai_api_key,
                 )
             log.info("Done: %s -> %s", result["title"], result["note_path"])
             notify(
@@ -251,14 +253,17 @@ def main():
         sys.exit(1)
     auth_token = resolve_secret("WEBHOOK_AUTH_TOKEN", auth_token_ref)
     github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-    bridge_token = resolve_secret(
-        "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
+    localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
+    localai_api_key = (
+        resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
+        if localai_api_key_ref or os.environ.get("LOCALAI_API_KEY")
+        else None
     )
 
     port = args.port or webhook_cfg.get("port", 8080)
 
     worker = threading.Thread(
-        target=_worker, args=(cfg, github_token, bridge_token), daemon=True
+        target=_worker, args=(cfg, github_token, localai_api_key), daemon=True
     )
     worker.start()
 

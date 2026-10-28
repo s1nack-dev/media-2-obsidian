@@ -4,7 +4,7 @@
 The pipeline container sends audio to this service over a Tailscale Serve
 endpoint. The service remains bound to loopback; only Parakeet/MLX and the
 bridge bearer token exist on this Mac. Claude Code summary/tag generation is
-intentionally performed by the Coolify pipeline container instead.
+intentionally performed by the pipeline container instead.
 """
 
 import argparse

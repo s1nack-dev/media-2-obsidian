@@ -1,6 +1,6 @@
 """
 Summarization and tagging via the Claude Code CLI (uses your subscription,
-not API billing). This runs in the pipeline process, including the Coolify
+not API billing). This runs in the pipeline process, including its
 container, and receives its non-interactive OAuth token through
 ``CLAUDE_CODE_OAUTH_TOKEN``.
 """

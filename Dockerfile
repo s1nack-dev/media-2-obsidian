@@ -2,9 +2,9 @@
 #
 # Image for the containerized part of the pipeline: server.py (webhook
 # mode) and fetch_playlist.py (playlist polling, run with --loop). Does
-# NOT include Parakeet/MLX - transcription stays on the remote Apple Silicon
-# Mac and is reached over HTTP via host_bridge.py. Claude Code runs here,
-# using a Coolify-injected OAuth token.
+# not include Parakeet/MLX: LocalAI can provide transcription and chat, while
+# the existing bridge and Claude CLI providers remain available during the
+# migration.
 #
 # No 1Password CLI in this image, deliberately: secrets are resolved on
 # the host (already authenticated via the desktop app's CLI integration)
@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg git ca-certificates nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Keep the CLI version deterministic. Update this build argument deliberately
-# after validating a new release; automatic updates are disabled below.
+# Pinned Claude CLI, installed as root before USER drops privileges. Update
+# CLAUDE_CODE_VERSION deliberately after validating a new release.
 RUN test -n "$CLAUDE_CODE_VERSION" \
     && npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
@@ -37,14 +37,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # Install deps first (better layer caching). Base deps only - NOT the
-# "mlx" extra (parakeet-mlx/mlx have no Linux wheels, and this image
-# never needs them; pipeline.py talks to host_bridge.py over HTTP
-# instead of importing parakeet-mlx directly).
+# "mlx" extra (model inference happens in LocalAI or through the bridge).
 ENV UV_NO_DEV=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked
 
-COPY src/core.py src/pipeline.py src/fetch_playlist.py src/server.py src/bridge_client.py src/claude_client.py src/bridge_monitor.py src/youtube_auth.py src/podcast_rss.py src/spotify_client.py ./src/
+COPY src/core.py src/pipeline.py src/fetch_playlist.py src/server.py src/localai_client.py src/bridge_client.py src/claude_client.py src/youtube_auth.py src/podcast_rss.py src/spotify_client.py ./src/
 COPY prompts ./prompts/
 COPY sandbox/claude.sb.tmpl ./sandbox/claude.sb.tmpl
 

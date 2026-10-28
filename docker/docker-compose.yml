@@ -1,13 +1,11 @@
 # Containerized deployment: cloudflared (tunnel), pipeline-server (webhook
 # mode), pipeline-fetch (playlist polling, fetch_playlist.py --loop).
 #
-# NOT containerized: host_bridge.py - it needs Parakeet/MLX (Metal/Neural
-# Engine access, no Linux wheels). Claude Code runs inside the pipeline image
-# using CLAUDE_CODE_OAUTH_TOKEN. For a remote Mac, set BRIDGE_URL to its private
-# Tailscale Serve HTTPS URL; host.docker.internal is only for Docker Desktop.
+# LocalAI can run separately (recommended when shared with other services) or
+# be addressed through LOCALAI_URL. The existing Mac bridge remains available.
 #
 # No 1Password CLI/Service Account inside these containers: GITHUB_TOKEN,
-# BRIDGE_AUTH_TOKEN, and WEBHOOK_AUTH_TOKEN are resolved on the HOST
+# BRIDGE_AUTH_TOKEN, LOCALAI_API_KEY (when enabled), and WEBHOOK_AUTH_TOKEN are resolved on the HOST
 # (already authenticated via the desktop app's CLI integration) via
 # `op run --env-file` before `docker compose` ever runs, then passed
 # straight through as plain env vars - see core.py's resolve_secret().
@@ -22,7 +20,7 @@
 #
 # Usage:
 #   cp ../.env.example ../.env
-#   # fill in TUNNEL_TOKEN, GITHUB_TOKEN, BRIDGE_AUTH_TOKEN,
+#   # fill in TUNNEL_TOKEN, GITHUB_TOKEN, BRIDGE_AUTH_TOKEN, LOCALAI_API_KEY (if configured),
 #   # WEBHOOK_AUTH_TOKEN (all as op:// references - see .env.example),
 #   # and the two *_REPO_HOST_PATH vars (must match config.yaml's repo
 #   # paths exactly)
@@ -69,6 +67,8 @@ services:
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
       - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
+      - LOCALAI_URL=${LOCALAI_URL:-http://host.docker.internal:8081}
       - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
     volumes:
@@ -96,6 +96,8 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
+      - LOCALAI_URL=${LOCALAI_URL:-http://host.docker.internal:8081}
       - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
       - PIPELINE_STATE_FILE=/app/.pipeline-runtime/state.json

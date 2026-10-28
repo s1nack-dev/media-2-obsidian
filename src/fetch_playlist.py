@@ -17,6 +17,7 @@ See README.md for full setup instructions.
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -149,8 +150,11 @@ def _run_once_locked(cfg: dict) -> None:
 
     try:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-        bridge_token = resolve_secret(
-            "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
+        localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
+        localai_api_key = (
+            resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
+            if localai_api_key_ref or os.environ.get("LOCALAI_API_KEY")
+            else None
         )
     except subprocess.CalledProcessError:
         log.error("Failed to read a secret from 1Password")
@@ -182,7 +186,7 @@ def _run_once_locked(cfg: dict) -> None:
                     "published_at": item["published_at"],
                 },
                 github_token=github_token,
-                bridge_token=bridge_token,
+                localai_api_key=localai_api_key,
             )
             processed.add(video_id)
             state["failed_attempts"].pop(video_id, None)

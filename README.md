@@ -11,10 +11,68 @@ Two ways to use this:
   link, etc.).
 
 Either way, the pipeline gets a transcript (existing subtitles/captions if
-available, otherwise downloads audio and transcribes it locally with
-Parakeet via MLX), summarizes it with Claude, commits the transcript to a
-GitHub repo, and adds a note to your Obsidian vault (also a GitHub repo)
+available, otherwise downloads audio and transcribes it through the selected
+provider), summarizes it through the selected chat provider, commits the
+transcript to a GitHub repo, and adds a note to your Obsidian vault (also a GitHub repo)
 with the source link, a link to the transcript, and the summary.
+
+## AI providers
+
+The original deployment remains the default: `transcription.provider: bridge`
+uses `host_bridge.py` on the Apple Silicon Mac (Parakeet/MLX), and
+`ai.provider: claude` uses the Claude Code CLI. Nothing needs to change to
+keep using it.
+
+To use [LocalAI](https://github.com/mudler/LocalAI) instead, set both providers
+to `localai` and give the configured model names:
+
+```yaml
+transcription:
+  provider: localai
+
+ai:
+  provider: localai
+
+localai:
+  url: "http://127.0.0.1:8081" # native; containers use your https://...ts.net URL
+  transcription_model: "parakeet"
+  chat_model: "minicpm5-1b-claude-opus-fable5-v2-thinking"
+  api_key_op_ref: "" # optional; LOCALAI_API_KEY overrides this
+```
+
+The pipeline then calls LocalAI's OpenAI-compatible
+`/v1/audio/transcriptions` endpoint requesting SRT and `/v1/chat/completions`
+for summaries and tags. Start and configure LocalAI independently. On macOS,
+LocalAI should bind `127.0.0.1:8081`, not `0.0.0.0:8080`: a wildcard bind fails
+when Tailscale already holds port 8080. To share LocalAI on your tailnet, proxy
+it with Tailscale Serve:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8081
+```
+
+Install a transcription model and a chat model in LocalAI before processing
+media. Its model names must match `localai.transcription_model` and
+`localai.chat_model`; list them with `curl -s http://127.0.0.1:8081/v1/models`.
+You can leave one provider on the legacy path while migrating the other.
+
+Anyone on your tailnet can reach a Tailscale-served LocalAI. Enable LocalAI's
+API keys and set `LOCALAI_API_KEY` if that is more access than you want.
+
+See the [dual-provider architecture](docs/dual-provider-architecture.md) for
+the component, request-flow, and migration diagrams.
+
+### Durable playlist job ledger
+
+Playlist mode stores a JSON job ledger in `state_file`, alongside its existing
+deduplication and retry data. The file is atomically replaced while holding the
+pipeline lock. Each job records its current step (`transcript`, `summary`,
+`subtitle_publish`, or `note_publish`), attempt count, error, and published
+paths. A job left `running` by an interrupted process is marked `retrying` on
+the next playlist pass and is retried through the normal idempotent publish
+path. This is intentionally a single-worker, single-machine durability layer;
+move to a database/workflow engine once concurrent workers or cross-service
+queries are needed.
 
 ## What you need
 
@@ -335,11 +393,6 @@ The timer runs every 30 minutes by default (`OnUnitActiveSec=30min` in
 ---
 
 ## 9. Optional: containerized deployment + webhook mode
-
-For a Coolify-hosted pipeline with a private, remote Apple Silicon Mac for
-transcription, use the dedicated [Coolify + remote Mac runbook](docs/coolify-remote-mac.md).
-That deployment runs Claude Code in the container, keeps the Mac
-transcription-only, and connects the two through host-installed Tailscale.
 
 Everything except Parakeet can run in Docker; Claude Code is installed in the
 pipeline image and authenticated with a non-interactive OAuth token:
