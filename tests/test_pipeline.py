@@ -880,3 +880,49 @@ def test_process_input_note_filename_preserves_exact_title(tmp_path, monkeypatch
         result["subtitle_path"].name
         == "chatgpt-just-became-a-work-agent-heres-how.sidecar.srt"
     )
+
+
+def test_localai_tags_skip_sentences_and_numbering(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.localai_client,
+        "chat_completion",
+        lambda *a, **k: "Here are the tags:\n1. Machine Learning\n- python\npython\n",
+    )
+    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    assert pipeline._generate_tags_with_localai("t", cfg, None) == [
+        "machine-learning",
+        "python",
+    ]
+
+
+def test_localai_url_env_override_applies_to_chat(monkeypatch):
+    seen = {}
+
+    def fake(prompt, model, url, key):
+        seen["url"] = url
+        return "## SUMMARY\n- ok"
+
+    monkeypatch.setattr(pipeline.localai_client, "chat_completion", fake)
+    monkeypatch.setenv("LOCALAI_URL", "https://example.ts.net")
+    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    assert pipeline._summarize_with_localai("t", cfg, None).startswith("## SUMMARY")
+    assert seen["url"] == "https://example.ts.net"
+
+
+def test_transcript_label_keeps_parakeet_for_bridge():
+    assert pipeline._transcript_label("bridge") == "parakeet"
+    assert pipeline._transcript_label("localai") == "localai"
+
+
+def test_invalid_ai_provider_fails_before_transcription(tmp_path):
+    import pytest
+
+    media = tmp_path / "a.mp3"
+    media.write_bytes(b"x")
+    cfg = {
+        "transcription": {"provider": "localai"},
+        "ai": {"provider": "nope"},
+        "localai": {"url": "http://127.0.0.1:8081", "transcription_model": "parakeet"},
+    }
+    with pytest.raises(ValueError, match="ai.provider"):
+        pipeline.process_input(media, cfg, localai_api_key="k")

@@ -13,7 +13,7 @@ class Response:
     def __exit__(self, *args):
         pass
 
-    def read(self):
+    def read(self, size=-1):
         return self.body
 
 
@@ -31,7 +31,7 @@ def test_transcribe_audio_uses_openai_compatible_multipart_endpoint(
         seen["body"] = request.data
         return Response(b"1\n00:00:00,000 --> 00:00:01,000\nHello\n")
 
-    monkeypatch.setattr(localai_client, "urlopen", fake)
+    monkeypatch.setattr(localai_client._OPENER, "open", fake)
     assert localai_client.transcribe_audio(
         audio, "parakeet-110m", "http://localai", "secret"
     ) == (
@@ -57,7 +57,7 @@ def test_chat_completion_uses_openai_compatible_endpoint(monkeypatch):
             json.dumps({"choices": [{"message": {"content": " Done "}}]}).encode()
         )
 
-    monkeypatch.setattr(localai_client, "urlopen", fake)
+    monkeypatch.setattr(localai_client._OPENER, "open", fake)
     assert (
         localai_client.chat_completion("Hello", "chat-model", "https://localai")
         == "Done"
@@ -69,3 +69,34 @@ def test_chat_completion_uses_openai_compatible_endpoint(monkeypatch):
             "messages": [{"role": "user", "content": "Hello"}],
         },
     }
+
+
+def test_transport_error_becomes_localai_request_error(monkeypatch):
+    import pytest
+    from urllib.error import URLError
+
+    def fail(request, timeout):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr(localai_client._OPENER, "open", fail)
+    with pytest.raises(localai_client.LocalAIRequestError):
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+
+
+def test_chat_response_without_choices_raises(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(
+        localai_client._OPENER, "open", lambda request, timeout: Response(b"{}")
+    )
+    with pytest.raises(localai_client.LocalAIRequestError):
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+
+
+def test_redirects_are_refused():
+    assert (
+        localai_client._NoRedirect().redirect_request(
+            None, None, 302, "", {}, "http://x"
+        )
+        is None
+    )

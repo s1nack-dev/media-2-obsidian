@@ -47,6 +47,7 @@ import localai_client
 import bridge_client
 from claude_client import generate_tags_with_claude as _claude_tags
 from claude_client import summarize_with_claude as _claude_summary
+from claude_client import _MAX_TAG_LENGTH, _sanitize_tag
 import podcast_rss
 import spotify_client
 from core import (
@@ -93,6 +94,16 @@ def _resolve_localai_api_key(cfg: dict) -> str | None:
     return resolve_secret("LOCALAI_API_KEY", api_key_ref) if api_key_ref else None
 
 
+def _localai_url(cfg: dict) -> str:
+    """LocalAI base URL; LOCALAI_URL overrides config for chat and transcription."""
+    return os.environ.get("LOCALAI_URL") or cfg["localai"]["url"]
+
+
+def _transcript_label(provider: str) -> str:
+    """Filename label for generated transcripts; bridge keeps its parakeet name."""
+    return "localai" if provider == "localai" else "parakeet"
+
+
 def _resolve_claude_oauth_token(cfg: dict) -> str | None:
     """Resolve Claude Code auth when the Claude chat provider is selected."""
     token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
@@ -116,7 +127,7 @@ def _summarize_with_localai(
     )
     try:
         output = localai_client.chat_completion(
-            prompt, cfg["localai"]["chat_model"], cfg["localai"]["url"], api_key
+            prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
         )
     except localai_client.LocalAIRequestError as exc:
         log.error("LocalAI summary failed: %s", exc)
@@ -138,19 +149,19 @@ def _generate_tags_with_localai(
     )
     try:
         output = localai_client.chat_completion(
-            prompt, cfg["localai"]["chat_model"], cfg["localai"]["url"], api_key
+            prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
         )
     except localai_client.LocalAIRequestError as exc:
         log.error("LocalAI tag generation failed: %s", exc)
         return []
     tags = []
     for line in output.splitlines():
-        tag = re.sub(
-            r"[^a-z0-9\-_/]",
-            "",
-            re.sub(r"\s+", "-", line.lstrip("-*• ").strip().lower()),
-        ).strip("-")
-        if tag and len(tag) <= 40 and tag not in tags:
+        raw_line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        # Same guard as the Claude path: reject sentence-like preamble lines.
+        if not raw_line or any(c in raw_line for c in ".!?:;"):
+            continue
+        tag = _sanitize_tag(raw_line)
+        if tag and len(tag) <= _MAX_TAG_LENGTH and tag not in tags:
             tags.append(tag)
     return tags
 
@@ -791,7 +802,7 @@ def _resolve_local_file(
         raw, text = _transcribe_audio(
             local_path, model_id, localai_url, localai_api_key, transcription_provider
         )
-        lang = "localai"
+        lang = _transcript_label(transcription_provider)
 
     return ProviderResolution(
         title=title,
@@ -837,7 +848,7 @@ def _resolve_youtube(
                 localai_api_key,
                 transcription_provider,
             )
-            lang = "localai"
+            lang = _transcript_label(transcription_provider)
 
     return ProviderResolution(
         title=title,
@@ -904,7 +915,7 @@ def _resolve_generic_link(
                 localai_api_key,
                 transcription_provider,
             )
-            lang = "localai"
+            lang = _transcript_label(transcription_provider)
             if title is None:
                 title = media_path.stem
 
@@ -971,7 +982,7 @@ def _resolve_overcast(
         published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
-        lang="localai",
+        lang=_transcript_label(transcription_provider),
     )
 
 
@@ -1070,7 +1081,7 @@ def _resolve_spotify(
         published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
-        lang="localai",
+        lang=_transcript_label(transcription_provider),
         extra_frontmatter=extra_frontmatter,
     )
 
@@ -1125,7 +1136,7 @@ def process_input(
                 "localai transcription requires localai.url and localai.transcription_model"
             )
         model_id = localai_cfg["transcription_model"]
-        transcription_url = os.environ.get("LOCALAI_URL") or localai_cfg["url"]
+        transcription_url = _localai_url(cfg)
         if localai_api_key is None:
             localai_api_key = _resolve_localai_api_key(cfg)
         transcription_token = localai_api_key
@@ -1142,6 +1153,13 @@ def process_input(
         )
     else:
         raise ValueError("transcription.provider must be 'bridge' or 'localai'")
+
+    # Validate the chat provider before the expensive download/transcription.
+    ai_provider = (cfg.get("ai") or {}).get("provider", "claude")
+    if ai_provider not in ("claude", "localai"):
+        raise ValueError("ai.provider must be 'claude' or 'localai'")
+    if ai_provider == "localai" and not (cfg.get("localai") or {}).get("chat_model"):
+        raise ValueError("LocalAI chat requires localai.chat_model")
 
     with tempfile.TemporaryDirectory(prefix="pipeline-") as tmp:
         workdir = Path(tmp)

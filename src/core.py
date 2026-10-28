@@ -816,7 +816,7 @@ def build_note(
 
     show_redirect = bool(redirect_url) and redirect_url != source_url
 
-    lines = ["---", f'title: "{title}"', f"source_type: {source_type}"]
+    lines = ["---", f"title: {json.dumps(title)}", f"source_type: {source_type}"]
     if source_url:
         lines.append(f"source_url: {source_url}")
     if show_redirect:

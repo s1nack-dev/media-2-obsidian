@@ -2,17 +2,32 @@
 
 import json
 import mimetypes
+import re
 import uuid
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from core import srt_text_to_plain_text
 
 
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
 class LocalAIRequestError(RuntimeError):
     """Raised when LocalAI cannot complete an API request."""
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Refuse redirects so the bearer key is never replayed to another host."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# No proxy handler either: the API key should only ever reach LocalAI itself.
+_OPENER = build_opener(ProxyHandler({}), _NoRedirect)
 
 
 def _validate_url(base_url: str) -> None:
@@ -39,18 +54,27 @@ def _error_detail(body: bytes) -> str:
 
 def _post(url: str, data: bytes, headers: dict[str, str], timeout: int) -> bytes:
     request = Request(url, data=data, method="POST", headers=headers)
+    path = urlparse(url).path
     try:
-        with urlopen(request, timeout=timeout) as response:  # nosec B310 - URL scheme is validated by public callers
-            return response.read()
+        with _OPENER.open(request, timeout=timeout) as response:  # nosec B310 - URL scheme is validated by public callers
+            body = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:
         raise LocalAIRequestError(
-            f"LocalAI request to {url} failed with HTTP {exc.code}: {_error_detail(exc.read())}"
+            f"LocalAI {path} failed with HTTP {exc.code}: {_error_detail(exc.read())[:200]}"
         ) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise LocalAIRequestError(f"LocalAI {path} unreachable: {exc}") from exc
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise LocalAIRequestError(
+            f"LocalAI {path} response exceeds {MAX_RESPONSE_BYTES} bytes"
+        )
+    return body
 
 
 def _multipart_audio(audio_path: Path, model: str) -> tuple[bytes, str]:
     """Build the narrow multipart request LocalAI's transcription endpoint needs."""
     boundary = f"----localai-{uuid.uuid4().hex}"
+    safe_name = re.sub(r'[\x00-\x1f"\\]', "_", audio_path.name)
     content_type = (
         mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
     )
@@ -71,7 +95,7 @@ def _multipart_audio(audio_path: Path, model: str) -> tuple[bytes, str]:
     chunks.extend(
         (
             f"--{boundary}\r\n".encode(),
-            f'Content-Disposition: form-data; name="file"; filename="{audio_path.name}"\r\n'.encode(),
+            f'Content-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'.encode(),
             f"Content-Type: {content_type}\r\n\r\n".encode(),
             audio_path.read_bytes(),
             b"\r\n",
