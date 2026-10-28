@@ -1123,8 +1123,8 @@ def process_input(
     cfg: dict,
     item_hint: dict | None = None,
     github_token: str | None = None,
-    localai_api_key: str | None = None,
     bridge_token: str | None = None,
+    localai_api_key: str | None = None,
 ) -> dict:
     """
     Process a media input through transcription, summarization, and GitHub publication.
@@ -1136,6 +1136,7 @@ def process_input(
             ``published_at``, or ``video_id``.
         github_token (str | None): Optional pre-resolved GitHub authentication token.
         localai_api_key (str | None): Optional pre-resolved LocalAI API key.
+        bridge_token (str | None): Optional pre-resolved bridge authentication token.
 
     Returns:
         dict: Metadata containing ``title``, ``source_type``, ``note_path``, and

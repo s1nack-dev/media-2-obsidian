@@ -66,8 +66,8 @@ MAX_BODY_BYTES = 10_000
 def _worker(
     cfg: dict,
     github_token: str,
-    localai_api_key: str | None,
     bridge_token: str | None = None,
+    localai_api_key: str | None = None,
 ) -> None:
     """
     Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
@@ -75,8 +75,8 @@ def _worker(
     Parameters:
         cfg (dict): Pipeline and notification configuration.
         github_token (str): Token used for GitHub operations.
-        localai_api_key (str | None): Optional LocalAI API key.
         bridge_token (str | None): Bridge token, when the bridge provider is used.
+        localai_api_key (str | None): Optional LocalAI API key.
     """
     lock_path = resolve_lock_path(cfg)
     while True:
@@ -275,7 +275,7 @@ def main():
 
     worker = threading.Thread(
         target=_worker,
-        args=(cfg, github_token, localai_api_key, bridge_token),
+        args=(cfg, github_token, bridge_token, localai_api_key),
         daemon=True,
     )
     worker.start()
