@@ -68,7 +68,7 @@ services:
       - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
-      - LOCALAI_URL=${LOCALAI_URL:-http://host.docker.internal:8081}
+      - LOCALAI_URL=${LOCALAI_URL:-}
       - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
     volumes:
@@ -97,7 +97,7 @@ services:
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
-      - LOCALAI_URL=${LOCALAI_URL:-http://host.docker.internal:8081}
+      - LOCALAI_URL=${LOCALAI_URL:-}
       - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
       - PIPELINE_STATE_FILE=/app/.pipeline-runtime/state.json
