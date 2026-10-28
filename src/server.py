@@ -4,17 +4,13 @@ Small HTTP server exposing pipeline.process_input() over the network, meant
 to sit behind a Cloudflare Tunnel (cloudflared) so a POST to a public URL
 can trigger processing of a YouTube URL or other link.
 
-Runs either natively on the Mac host or in a container (see
-docker/docker-compose.yml) - unlike host_bridge.py, this has no
-MLX/parakeet or claude-CLI dependency itself (process_input() talks to
-host_bridge.py over HTTP for both via bridge_client.py), so it isn't
-tied to running on the host. If containerized, host_bridge.py still has
-to run natively on the Mac and be reachable via host.docker.internal -
-see README.md's "Containerized deployment" section.
+Runs either natively or in a container. Fallback transcription goes to
+host_bridge.py (the default) or LocalAI, and summaries/tags to the Claude CLI
+(the default) or LocalAI, per transcription.provider and ai.provider.
 
 Requests are queued and handled one at a time by a single background
-worker thread: process_input() shares host_bridge.py's cached Parakeet
-model and the same on-disk git clones across calls, so concurrent
+worker thread: process_input() shares the same on-disk git clones across
+calls, so concurrent
 processing isn't safe. The HTTP server itself stays responsive because
 handling a request only means validating it and enqueueing it - the slow
 work (download, transcribe, summarize, commit) happens in the worker
@@ -46,7 +42,14 @@ from core import (
     resolve_secret,
     validate_public_url,
 )
-from pipeline import NoTranscriptAvailableError, detect_input_type, process_input
+from pipeline import (
+    check_localai_container_config,
+    resolve_bridge_token,
+    resolve_localai_api_key,
+    NoTranscriptAvailableError,
+    detect_input_type,
+    process_input,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,14 +63,20 @@ _job_queue: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 MAX_BODY_BYTES = 10_000
 
 
-def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
+def _worker(
+    cfg: dict,
+    github_token: str,
+    bridge_token: str | None = None,
+    localai_api_key: str | None = None,
+) -> None:
     """
     Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
 
     Parameters:
         cfg (dict): Pipeline and notification configuration.
         github_token (str): Token used for GitHub operations.
-        bridge_token (str): Token used for bridge operations.
+        bridge_token (str | None): Bridge token, when the bridge provider is used.
+        localai_api_key (str | None): Optional LocalAI API key.
     """
     lock_path = resolve_lock_path(cfg)
     while True:
@@ -94,7 +103,11 @@ def _worker(cfg: dict, github_token: str, bridge_token: str) -> None:
 
             with pipeline_lock(lock_path):
                 result = process_input(
-                    raw_input, cfg, github_token=github_token, bridge_token=bridge_token
+                    raw_input,
+                    cfg,
+                    github_token=github_token,
+                    localai_api_key=localai_api_key,
+                    bridge_token=bridge_token,
                 )
             log.info("Done: %s -> %s", result["title"], result["note_path"])
             notify(
@@ -244,6 +257,7 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    check_localai_container_config(cfg)
     webhook_cfg = cfg.get("webhook") or {}
 
     auth_token_ref = webhook_cfg.get("auth_token_op_ref")
@@ -254,14 +268,15 @@ def main():
         sys.exit(1)
     auth_token = resolve_secret("WEBHOOK_AUTH_TOKEN", auth_token_ref)
     github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-    bridge_token = resolve_secret(
-        "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
-    )
+    bridge_token = resolve_bridge_token(cfg)
+    localai_api_key = resolve_localai_api_key(cfg)
 
     port = args.port or webhook_cfg.get("port", 8080)
 
     worker = threading.Thread(
-        target=_worker, args=(cfg, github_token, bridge_token), daemon=True
+        target=_worker,
+        args=(cfg, github_token, bridge_token, localai_api_key),
+        daemon=True,
     )
     worker.start()
 

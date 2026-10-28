@@ -1,9 +1,9 @@
 """
-Container-safe HTTP client for host_bridge.py - the host-native service
-exposing transcription (Parakeet/MLX) and summarization/tagging (Claude
-CLI, subscription auth), neither of which can run inside a Linux
-container on this Mac. Used by pipeline.py; has no MLX/parakeet or
-claude-CLI dependency itself, just urllib.
+Container-safe HTTP client for host_bridge.py - the host-native,
+transcription-only service running with Parakeet/MLX on the remote Mac.
+Used when ``transcription.provider`` is ``bridge``; summaries and tags come
+from ``claude_client.py`` or LocalAI per ``ai.provider``. This module intentionally has no MLX/parakeet or
+Claude Code dependency; it only sends audio to the private bridge.
 """
 
 import json
@@ -11,8 +11,6 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
-
-_JSON_HEADERS = {"Content-Type": "application/json"}
 
 
 class BridgeRequestError(RuntimeError):
@@ -90,43 +88,3 @@ def transcribe_audio(
         url, audio_path.read_bytes(), _auth_headers(bridge_token), timeout=1800
     )
     return payload["srt_text"], payload["plain_text"]
-
-
-def summarize(transcript_text: str, bridge_url: str, bridge_token: str) -> str:
-    """
-    Generate a summary of the transcript using the bridge service.
-
-    Parameters:
-        transcript_text (str): Transcript text to summarize.
-        bridge_url (str): Base URL of the bridge service.
-        bridge_token (str): Bearer token for authenticating the request.
-
-    Returns:
-        str: Generated transcript summary.
-    """
-    _validate_bridge_url(bridge_url)
-    url = f"{bridge_url.rstrip('/')}/summarize"
-    body = json.dumps({"transcript": transcript_text}).encode()
-    headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}
-    payload = _post_json(url, body, headers, timeout=600)
-    return payload["summary"]
-
-
-def generate_tags(
-    transcript_text: str, bridge_url: str, bridge_token: str
-) -> list[str]:
-    """
-    Generate tags from transcript text using the bridge service.
-
-    Parameters:
-        transcript_text (str): Transcript text to analyze.
-
-    Returns:
-        list[str]: Tags generated from the transcript.
-    """
-    _validate_bridge_url(bridge_url)
-    url = f"{bridge_url.rstrip('/')}/tags"
-    body = json.dumps({"transcript": transcript_text}).encode()
-    headers = {**_JSON_HEADERS, **_auth_headers(bridge_token)}
-    payload = _post_json(url, body, headers, timeout=600)
-    return payload["tags"]

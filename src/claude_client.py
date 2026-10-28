@@ -1,8 +1,8 @@
 """
 Summarization and tagging via the Claude Code CLI (uses your subscription,
-not API billing). Host-only: needs the Claude CLI's subscription OAuth
-session, tied to this Mac's keychain/session, so this module is only ever
-imported by host_bridge.py - never bundled into the container image.
+not API billing). This runs in the pipeline process, including its
+container, and receives its non-interactive OAuth token through
+``CLAUDE_CODE_OAUTH_TOKEN``.
 """
 
 import logging
@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -147,7 +148,22 @@ def _run_claude(
         # native terminal that launched the bridge. The CLI flags below still
         # disable tools, MCP, skills, hooks, and session persistence, so the
         # untrusted transcript cannot access those ambient capabilities.
-        claude_env = os.environ.copy()
+        # Off macOS (the pipeline container) there is no Seatbelt sandbox, so
+        # don't hand the pipeline's other secrets to a process reading
+        # untrusted transcripts: pass only what the CLI needs.
+        if sys.platform == "darwin":
+            claude_env = os.environ.copy()
+        else:
+            claude_env = {
+                k: os.environ[k]
+                for k in (
+                    "LANG",
+                    "LC_ALL",
+                    "DISABLE_AUTOUPDATER",
+                    "CLAUDE_CODE_OAUTH_TOKEN",
+                )
+                if k in os.environ
+            }
         claude_env.update(
             {
                 "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),

@@ -3,6 +3,32 @@ import pytest
 import pipeline
 
 
+def test_claude_oauth_prefers_container_environment(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "container-token")
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_secret",
+        lambda *args: pytest.fail("should not read 1Password"),
+    )
+    assert (
+        pipeline._resolve_claude_oauth_token(
+            {"claude": {"oauth_token_op_ref": "op://ref"}}
+        )
+        == "container-token"
+    )
+
+
+def test_claude_oauth_uses_native_secret_reference(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(pipeline, "resolve_secret", lambda env, ref: f"{env}:{ref}")
+    assert (
+        pipeline._resolve_claude_oauth_token(
+            {"claude": {"oauth_token_op_ref": "op://ref"}}
+        )
+        == "CLAUDE_CODE_OAUTH_TOKEN:op://ref"
+    )
+
+
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -98,9 +124,9 @@ def test_process_local_sidecar_end_to_end(tmp_path, monkeypatch):
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["testing"]
     )
     result = pipeline.process_input(
         media, cfg, github_token="token", bridge_token="bridge"
@@ -500,9 +526,9 @@ def test_process_input_spotify_rss_transcript_bypasses_audio_download(
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline.spotify_client,
@@ -564,9 +590,9 @@ def test_process_input_spotify_no_transcript_falls_back_to_parakeet(
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline.spotify_client,
@@ -735,10 +761,8 @@ def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
-    monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["video"]
-    )
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "generate_tags_with_claude", lambda *args: ["video"])
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
     monkeypatch.setattr(
         pipeline, "fetch_title_via_ytdlp", lambda url, **kwargs: "Vimeo Talk"
@@ -790,9 +814,9 @@ def test_process_input_overcast_source_type_and_redirect_url(tmp_path, monkeypat
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline,
@@ -838,9 +862,9 @@ def test_process_input_note_filename_preserves_exact_title(tmp_path, monkeypatch
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["testing"]
     )
 
     result = pipeline.process_input(
@@ -856,3 +880,93 @@ def test_process_input_note_filename_preserves_exact_title(tmp_path, monkeypatch
         result["subtitle_path"].name
         == "chatgpt-just-became-a-work-agent-heres-how.sidecar.srt"
     )
+
+
+def test_localai_tags_skip_sentences_and_numbering(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.localai_client,
+        "chat_completion",
+        lambda *a, **k: "Here are the tags:\n1. Machine Learning\n- python\npython\n",
+    )
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
+    assert pipeline._generate_tags_with_localai("t", cfg, None) == [
+        "machine-learning",
+        "python",
+    ]
+
+
+def test_localai_url_env_override_applies_to_chat(monkeypatch):
+    seen = {}
+
+    def fake(prompt, model, url, key):
+        seen["url"] = url
+        return "## SUMMARY\n- ok"
+
+    monkeypatch.setattr(pipeline.localai_client, "chat_completion", fake)
+    monkeypatch.setenv("LOCALAI_URL", "https://example.ts.net")
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
+    assert pipeline._summarize_with_localai("t", cfg, None).startswith("## SUMMARY")
+    assert seen["url"] == "https://example.ts.net"
+
+
+def test_transcript_label_keeps_parakeet_for_bridge():
+    assert pipeline._transcript_label("bridge") == "parakeet"
+    assert pipeline._transcript_label("localai") == "localai"
+
+
+def test_invalid_ai_provider_fails_before_transcription(tmp_path):
+    import pytest
+
+    media = tmp_path / "a.mp3"
+    media.write_bytes(b"x")
+    cfg = {
+        "transcription": {"provider": "localai"},
+        "ai": {"provider": "nope"},
+        "localai": {"url": "http://127.0.0.1:8082", "transcription_model": "parakeet"},
+    }
+    with pytest.raises(ValueError, match="ai.provider"):
+        pipeline.process_input(media, cfg, localai_api_key="k")
+
+
+def test_localai_summary_failure_raises_for_retry(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.localai_client, "chat_completion", lambda *a, **k: "no heading"
+    )
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
+    with pytest.raises(pipeline.localai_client.LocalAIRequestError):
+        pipeline._summarize_with_localai("t", cfg, None)
+
+
+def test_bridge_token_resolved_only_for_bridge(monkeypatch):
+    monkeypatch.setattr(pipeline, "resolve_secret", lambda *a: "tok")
+    bridge = {
+        "transcription": {"provider": "bridge"},
+        "bridge": {"auth_token_op_ref": "x"},
+    }
+    assert pipeline.resolve_bridge_token(bridge) == "tok"
+    assert (
+        pipeline.resolve_bridge_token({"transcription": {"provider": "localai"}})
+        is None
+    )
+
+
+def test_bridge_token_allows_environment_only_configuration(monkeypatch):
+    monkeypatch.setenv("BRIDGE_AUTH_TOKEN", "from-env")
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_secret",
+        lambda *a: (_ for _ in ()).throw(AssertionError("should not resolve fallback")),
+    )
+    assert pipeline.resolve_bridge_token({}) == "from-env"
+
+
+def test_container_without_localai_url_fails_fast(monkeypatch):
+    monkeypatch.delenv("LOCALAI_URL", raising=False)
+    monkeypatch.setattr(
+        pipeline.Path, "exists", lambda self: str(self) == "/.dockerenv"
+    )
+    cfg = {"ai": {"provider": "localai"}, "localai": {"url": "http://127.0.0.1:8082"}}
+    with pytest.raises(ValueError, match="LOCALAI_URL"):
+        pipeline.check_localai_container_config(cfg)
+    monkeypatch.setenv("LOCALAI_URL", "https://host.tailnet.ts.net")
+    pipeline.check_localai_container_config(cfg)

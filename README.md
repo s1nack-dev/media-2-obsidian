@@ -11,10 +11,57 @@ Two ways to use this:
   link, etc.).
 
 Either way, the pipeline gets a transcript (existing subtitles/captions if
-available, otherwise downloads audio and transcribes it locally with
-Parakeet via MLX), summarizes it with Claude, commits the transcript to a
-GitHub repo, and adds a note to your Obsidian vault (also a GitHub repo)
+available, otherwise downloads audio and transcribes it through the selected
+provider), summarizes it through the selected chat provider, commits the
+transcript to a GitHub repo, and adds a note to your Obsidian vault (also a GitHub repo)
 with the source link, a link to the transcript, and the summary.
+
+## AI providers
+
+The original deployment remains the default: `transcription.provider: bridge`
+uses `host_bridge.py` on the Apple Silicon Mac (Parakeet/MLX), and
+`ai.provider: claude` uses the Claude Code CLI. Nothing needs to change to
+keep using it.
+
+To use [LocalAI](https://github.com/mudler/LocalAI) instead, set both providers
+to `localai` and give the configured model names:
+
+```yaml
+transcription:
+  provider: localai
+
+ai:
+  provider: localai
+
+localai:
+  url: "http://127.0.0.1:8082" # native; containers use your https://...ts.net URL
+  transcription_model: "parakeet"
+  chat_model: "minicpm5-1b-claude-opus-fable5-v2-thinking"
+  api_key_op_ref: "" # optional; LOCALAI_API_KEY overrides this
+```
+
+The pipeline then calls LocalAI's OpenAI-compatible
+`/v1/audio/transcriptions` endpoint requesting SRT and `/v1/chat/completions`
+for summaries and tags. Start and configure LocalAI independently. On macOS,
+LocalAI should bind `127.0.0.1:8082`, not `0.0.0.0:8080`: a wildcard bind fails
+when Tailscale already holds port 8080. To share LocalAI on your tailnet, proxy
+it with Tailscale Serve:
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:8082
+```
+
+Install a transcription model and a chat model in LocalAI before processing
+media. Its model names must match `localai.transcription_model` and
+`localai.chat_model`; list them with `curl -s http://127.0.0.1:8082/v1/models`.
+You can leave one provider on the legacy path while migrating the other.
+
+Anyone on your tailnet can reach a Tailscale-served LocalAI. Enable LocalAI's
+API keys and set `LOCALAI_API_KEY` if that is more access than you want.
+
+See the [dual-provider architecture](docs/dual-provider-architecture.md) for
+the component, request-flow, and migration diagrams.
+
 
 ## What you need
 
@@ -232,13 +279,12 @@ Edit `config.yaml`:
   blank to skip this entirely.
 - Everything else has sane defaults.
 
-Note: the first time transcription actually runs for a given
-`transcription.model`, it's downloaded (~2.3 GB for the default model)
-from Hugging Face to its local cache — that first run will be slower and
-needs network access. This isn't a hang. Every run after that loads the
-model straight from the local cache with no network calls at all —
-transcription itself always runs fully locally regardless (no audio is
-ever sent anywhere).
+Note: the bridge never downloads models on its own. Download the
+`transcription.model` (~2.3 GB for the default) once before first use with
+`uv run python src/preload_transcription_model.py --config config.yaml`
+(add `--hf-home` if the bridge runs with a different `HF_HOME`). After that
+the model loads from the local cache with no network calls, and audio never
+leaves the Mac.
 
 ## 7. Test it manually
 
@@ -336,7 +382,8 @@ The timer runs every 30 minutes by default (`OnUnitActiveSec=30min` in
 
 ## 9. Optional: containerized deployment + webhook mode
 
-Everything except Parakeet and the Claude CLI can run in Docker:
+Everything except Parakeet can run in Docker; Claude Code is installed in the
+pipeline image and authenticated with a non-interactive OAuth token:
 `server.py` (webhook mode, `POST /process` triggers a single URL/file the
 same way `pipeline.py --input` does) and `fetch_playlist.py --loop`
 (playlist polling, containers have no external scheduler to reach them so
@@ -345,13 +392,12 @@ containers, alongside `cloudflared` for exposing `server.py` on a public
 URL via [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
 **Why not everything:** Parakeet needs direct Metal/Neural Engine access
-(Docker Desktop's Linux VM can't provide that), and the Claude CLI's
-subscription login is tied to this Mac's keychain/session (a container
-can't share it). Both stay behind `host_bridge.py`, a small HTTP service
-that runs natively on the Mac — the containers call it over HTTP via
-`host.docker.internal` instead of doing either in-process. **Start
-`host_bridge.py` before the containers** — they'll fail every job with a
-connection error to `host.docker.internal` until it's up.
+(Docker Desktop's Linux VM can't provide that). It stays behind
+`host_bridge.py`, a small transcription-only HTTP service that runs natively
+on the Mac; the containers call it over HTTP. Claude summaries and tags run
+inside the pipeline container. **With `transcription.provider: bridge` (the
+default), start `host_bridge.py` before the containers** — they'll fail every
+job that needs transcription until it's up. LocalAI-only setups don't need it.
 
 You don't need this section at all if you're happy with native
 `fetch_playlist.py` (cron) + `pipeline.py --input` (manual) as set up in

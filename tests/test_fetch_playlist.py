@@ -62,6 +62,7 @@ def test_run_once_processes_and_persists(tmp_path, monkeypatch):
         "lock_file": str(tmp_path / "lock"),
     }
     monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "resolve_bridge_token", lambda cfg: "token")
     monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
     monkeypatch.setattr(
         fetch_playlist, "process_input", lambda *args, **kwargs: {"title": "One"}
@@ -102,6 +103,7 @@ def test_run_once_serializes_state_selection(tmp_path, monkeypatch):
         return {"title": "One"}
 
     monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "resolve_bridge_token", lambda cfg: "token")
     monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
     monkeypatch.setattr(fetch_playlist, "load_state", load_state)
     monkeypatch.setattr(fetch_playlist, "process_input", process_input)
@@ -132,6 +134,7 @@ def test_run_once_retries_transient_failure(tmp_path, monkeypatch):
         "max_retries": 3,
     }
     monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "resolve_bridge_token", lambda cfg: "token")
     monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
     monkeypatch.setattr(
         fetch_playlist,
@@ -153,6 +156,7 @@ def test_run_once_skips_already_processed(tmp_path, monkeypatch):
         "bridge": {"auth_token_op_ref": "y"},
     }
     monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "resolve_bridge_token", lambda cfg: "token")
     monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
     fetch_playlist.run_once(cfg)
 
@@ -171,6 +175,7 @@ def test_run_once_gives_up_after_max_retries(tmp_path, monkeypatch):
         "lock_file": str(tmp_path / "lock"),
     }
     monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "resolve_bridge_token", lambda cfg: "token")
     monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
     monkeypatch.setattr(
         fetch_playlist,

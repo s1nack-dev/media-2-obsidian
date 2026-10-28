@@ -5,10 +5,12 @@ config keys, secrets, scheduling, and per-file behavior, see [`CLAUDE.md`](../CL
 
 ## 1. Components
 
-The system splits along one hard constraint: `host_bridge.py` and the two modules it
-wraps need to run natively on an Apple Silicon Mac (MLX for transcription, a
-keychain-bound Claude CLI session for summarization). Everything else is plain
-Python with no host dependency, which is what lets it run in a Linux container.
+Providers are selected per capability. With the defaults
+(`transcription.provider: bridge`, `ai.provider: claude`), fallback
+transcription needs `host_bridge.py` and its MLX backend running natively on an
+Apple Silicon Mac, and Claude Code runs wherever the pipeline runs. Selecting
+`localai` for either capability sends that work to a LocalAI server instead, so
+the Mac bridge is optional (see [dual-provider architecture](dual-provider-architecture.md)).
 
 ```mermaid
 flowchart TB
@@ -18,13 +20,14 @@ flowchart TB
         pipeline["pipeline.py<br/><i>process_input() + provider resolvers</i>"]
         spotify["spotify_client.py<br/><i>Spotify episode metadata</i>"]
         podcastrss["podcast_rss.py<br/><i>RSS/Podcasting-2.0 transcript discovery</i>"]
-        bridgeclient["bridge_client.py<br/><i>HTTP client</i>"]
+        bridgeclient["bridge_client.py<br/><i>bridge transcription HTTP client</i>"]
+        localai["localai_client.py<br/><i>LocalAI transcription + chat client</i>"]
+        claude["claude_client.py<br/><i>summarize + tag via Claude CLI</i>"]
         core["core.py<br/><i>config, state, git, notify, SSRF-safe fetch</i>"]
     end
 
     subgraph hostonly["Host-only (native Mac, never containerized)"]
         bridge["host_bridge.py<br/><i>HTTP server on 127.0.0.1</i>"]
-        claude["claude_client.py<br/><i>summarize + tag via Claude CLI</i>"]
         transcribe["transcribe_backend.py<br/><i>Parakeet/MLX</i>"]
     end
 
@@ -40,24 +43,28 @@ flowchart TB
     spotify --> core
     podcastrss --> core
     pipeline --> bridgeclient
-    bridgeclient -- "HTTP, auth-token-gated" --> bridge
-    bridge --> claude
+    pipeline --> localai
+    pipeline --> claude
+    bridgeclient -- "bridge transcription: HTTP, auth-token-gated" --> bridge
+    localai -- "transcription + chat: OpenAI-compatible HTTP" --> localaiServer([LocalAI server])
     bridge --> transcribe
     bridge --> core
-    claude -. "claude -p (sandboxed)" .-> claudeCLI(["Claude CLI"])
+    claude -. "claude -p (Seatbelt on macOS, CLI safe mode in containers)" .-> claudeCLI(["Claude CLI"])
     transcribe -. "MLX" .-> parakeet(["Parakeet model"])
 
     style hostonly fill:#2d1b1b,stroke:#a33
     style portable fill:#1b2d1e,stroke:#3a3
 ```
 
-**Why this shape:** `pipeline.py` never talks to MLX or the Claude CLI directly — it
-calls `bridge_client.py`, which calls `host_bridge.py` over HTTP. That indirection is
-the entire reason `pipeline.py`/`fetch_playlist.py`/`server.py` can run in a container
-while transcription and summarization still happen on the Mac. `spotify_client.py` and
+**Why this shape:** `pipeline.py` never talks to MLX directly — for transcription it
+calls `bridge_client.py`, which calls `host_bridge.py` over HTTP (or `localai_client.py`
+when LocalAI is selected). That indirection is what lets `pipeline.py`/`fetch_playlist.py`/
+`server.py` run in a container while Parakeet transcription stays on the Mac. Summaries
+and tags run in the pipeline process itself, through the Claude CLI or LocalAI. `spotify_client.py` and
 `podcast_rss.py` are pure metadata/HTTP adapters (no MLX/Claude dependency either) —
-they only ever hand `pipeline.py` a transcript or an audio URL to feed into the same
-`bridge_client` path every other source uses. `core.py`'s `open_pinned()`/`safe_fetch()`
+they hand `pipeline.py` a transcript or an audio URL, which the configured transcription
+provider processes through `bridge_client.py` or `localai_client.py`. `core.py`'s
+`open_pinned()`/`safe_fetch()`
 are the shared SSRF-safe primitives both adapters (and `pipeline.py` itself) build on.
 
 ## 2. Deployment topology: native vs. containerized
@@ -169,13 +176,13 @@ itself has no source-specific branching beyond the dispatch.
 ```mermaid
 flowchart TD
     input(["raw_input"]) --> islocal{"Local file path?"}
-    islocal -- yes --> local["_resolve_local_file()<br/><i>sidecar .srt, else Parakeet</i>"]
+    islocal -- yes --> local["_resolve_local_file()<br/><i>sidecar .srt, else configured transcription provider</i>"]
     islocal -- no --> detect["detect_input_type()"]
 
-    detect -- youtube --> yt["_resolve_youtube()<br/><i>yt-dlp captions, else audio+Parakeet</i>"]
-    detect -- overcast --> oc["_resolve_overcast()<br/><i>scrape RSS enclosure mp3, then Parakeet</i>"]
+    detect -- youtube --> yt["_resolve_youtube()<br/><i>yt-dlp captions, else audio + configured provider</i>"]
+    detect -- overcast --> oc["_resolve_overcast()<br/><i>scrape RSS enclosure mp3, then configured provider</i>"]
     detect -- spotify --> sp["_resolve_spotify()<br/><i>spotify_client + podcast_rss</i>"]
-    detect -- generic_link --> gl["_resolve_generic_link()<br/><i>yt-dlp captions, else audio+Parakeet</i>"]
+    detect -- generic_link --> gl["_resolve_generic_link()<br/><i>yt-dlp captions, else audio + configured provider</i>"]
 
     oc -. "falls back on scrape failure" .-> gl
 
@@ -215,7 +222,7 @@ sequenceDiagram
     participant RSS as podcast_rss.py
     participant iTunes as iTunes Search API
     participant Feed as Show's RSS feed
-    participant BC as bridge_client.py (Parakeet, via host_bridge)
+    participant TP as configured transcription provider<br/>(bridge_client.py or localai_client.py)
 
     P->>SC: resolve_episode_metadata(url, cfg)
     alt spotify.client_id/secret configured
@@ -239,8 +246,8 @@ sequenceDiagram
         RSS-->>P: transcript
     else no transcript published
         RSS-->>P: enclosure_url (original podcast audio)
-        P->>BC: transcribe_audio(enclosure_url download)
-        BC-->>P: (raw, plain_text)
+        P->>TP: transcribe_audio(enclosure_url download)
+        TP-->>P: (raw, plain_text)
     end
 ```
 
@@ -257,24 +264,15 @@ Once any resolver above returns a `ProviderResolution` with a transcript,
 ```mermaid
 sequenceDiagram
     participant P as pipeline.process_input()
-    participant BC as bridge_client.py
-    participant HB as host_bridge.py
-    participant CC as claude_client.py (Claude CLI)
+    participant TP as transcription provider<br/>(bridge_client.py or localai_client.py)
+    participant AP as AI provider<br/>(claude_client.py or localai_client.py)
     participant GH as GitHub (subtitles + vault repos)
 
     Note over P: ProviderResolution in hand<br/>(title, transcript, published_at, ...)
-    P->>BC: summarize(transcript_text)
-    BC->>HB: POST /summarize
-    HB->>CC: summarize_with_claude()
-    CC-->>HB: ## SUMMARY ...
-    HB-->>BC: summary
-    BC-->>P: summary
-    P->>BC: generate_tags(transcript_text)
-    BC->>HB: POST /tags
-    HB->>CC: generate_tags_with_claude()
-    CC-->>HB: tags
-    HB-->>BC: tags
-    BC-->>P: tags
+    P->>AP: summarize(transcript_text)
+    AP-->>P: ## SUMMARY ...
+    P->>AP: generate_tags(transcript_text)
+    AP-->>P: tags
     P->>GH: commit transcript (subtitles repo)
     P->>GH: commit markdown note (vault repo, extra_frontmatter merged in)
     P-->>P: return {title, source_type, note_path, subtitle_path}

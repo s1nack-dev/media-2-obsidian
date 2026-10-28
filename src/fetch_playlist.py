@@ -37,7 +37,13 @@ from core import (
     resolve_state_path,
     save_state,
 )
-from pipeline import NoTranscriptAvailableError, process_input
+from pipeline import (
+    check_localai_container_config,
+    resolve_bridge_token,
+    resolve_localai_api_key,
+    NoTranscriptAvailableError,
+    process_input,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -149,9 +155,8 @@ def _run_once_locked(cfg: dict) -> None:
 
     try:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
-        bridge_token = resolve_secret(
-            "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
-        )
+        bridge_token = resolve_bridge_token(cfg)
+        localai_api_key = resolve_localai_api_key(cfg)
     except subprocess.CalledProcessError:
         log.error("Failed to read a secret from 1Password")
         sys.exit(1)
@@ -182,6 +187,7 @@ def _run_once_locked(cfg: dict) -> None:
                     "published_at": item["published_at"],
                 },
                 github_token=github_token,
+                localai_api_key=localai_api_key,
                 bridge_token=bridge_token,
             )
             processed.add(video_id)
@@ -263,6 +269,7 @@ def main():
         parser.error("--interval must be a positive integer when using --loop")
 
     cfg = load_config(args.config)
+    check_localai_container_config(cfg)
 
     if not args.loop:
         run_once(cfg)

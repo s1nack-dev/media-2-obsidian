@@ -5,10 +5,9 @@ cannot run in a container. Used exclusively by host_bridge.py, which
 exposes it over HTTP for the containerized pipeline to call.
 
 Transcription itself always runs locally via MLX (Apple Neural Engine/GPU)
-- no audio ever leaves the machine. The only network dependency is
-Hugging Face Hub, used to download model weights the first time a given
-model is used; see get_model() for how that's limited to a one-time
-download.
+- no audio ever leaves the machine. Production loading is offline-only:
+models must be fetched in a controlled maintenance step with
+``preload_model()`` before the bridge starts.
 """
 
 import logging
@@ -36,19 +35,36 @@ def get_model(model_id: str) -> BaseParakeet:
         BaseParakeet: The cached or newly loaded model.
     """
     if model_id not in _MODEL_CACHE:
+        previous_offline = hf_constants.HF_HUB_OFFLINE
         hf_constants.HF_HUB_OFFLINE = True
         try:
             _MODEL_CACHE[model_id] = parakeet_mlx.from_pretrained(model_id)
-        except Exception:
-            log.info(
-                "Parakeet model %r not cached yet - downloading once from Hugging Face.",
-                model_id,
-            )
-            hf_constants.HF_HUB_OFFLINE = False
-            _MODEL_CACHE[model_id] = parakeet_mlx.from_pretrained(model_id)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Parakeet model {model_id!r} could not be loaded from the local cache "
+                f"({type(exc).__name__}: {exc}). If it was never downloaded, run "
+                "preload_transcription_model.py first with the bridge's HF_HOME."
+            ) from exc
         finally:
-            hf_constants.HF_HUB_OFFLINE = False
+            hf_constants.HF_HUB_OFFLINE = previous_offline
     return _MODEL_CACHE[model_id]
+
+
+def preload_model(model_id: str) -> BaseParakeet:
+    """Download and load a model during an explicit maintenance window.
+
+    This is the only code path that permits Hugging Face network access. The
+    long-running, sandboxed bridge uses :func:`get_model` and cannot download
+    a model opportunistically.
+    """
+    previous_offline = hf_constants.HF_HUB_OFFLINE
+    hf_constants.HF_HUB_OFFLINE = False
+    try:
+        model = parakeet_mlx.from_pretrained(model_id)
+        _MODEL_CACHE[model_id] = model
+        return model
+    finally:
+        hf_constants.HF_HUB_OFFLINE = previous_offline
 
 
 def _format_timestamp(seconds: float) -> str:

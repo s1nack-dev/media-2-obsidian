@@ -10,17 +10,13 @@ Processes ONE input at a time:
   2. Gets a transcript: existing subtitles/captions if available (YouTube,
      or any site yt-dlp can extract from), an RSS/Podcasting-2.0 transcript
      link (Spotify episodes, via podcast_rss.py), a sidecar .srt file (local
-     files), otherwise sends audio to host_bridge.py for transcription
-     (Parakeet/MLX - can't run in this container, see bridge_client.py).
-  3. Summarizes the transcript, also via host_bridge.py (claude -p, host
-     subscription auth - also can't run in this container).
+    files), otherwise sends audio to the configured LocalAI or Mac bridge.
+  3. Summarizes and tags through configured LocalAI or Claude Code.
   4. Commits the transcript file to your subtitles GitHub repo.
   5. Commits a new Obsidian markdown note to your vault GitHub repo.
 
-This module itself has no MLX/parakeet or claude-CLI dependency - it's
-meant to run in the pipeline container. Only host_bridge.py (run natively
-on the Mac) needs those. See CLAUDE.md's "Webhook mode" / "Containerized
-deployment" sections for the full architecture.
+This module has no MLX/parakeet dependency; it can call either LocalAI or the
+existing host bridge, and can use LocalAI chat or the Claude CLI.
 
 Usable two ways:
   - Standalone CLI: `python pipeline.py --input <path-or-url> --config config.yaml`
@@ -47,7 +43,11 @@ from urllib.parse import parse_qs, urlparse
 
 import defusedxml.ElementTree as ET
 
+import localai_client
 import bridge_client
+from claude_client import generate_tags_with_claude as _claude_tags
+from claude_client import summarize_with_claude as _claude_summary
+from claude_client import _MAX_TAG_LENGTH, _sanitize_tag
 import podcast_rss
 import spotify_client
 from core import (
@@ -83,6 +83,148 @@ DIRECT_MEDIA_EXTENSIONS = {
     ".m4a",
     ".flac",
 }
+
+
+def _resolve_localai_api_key(cfg: dict) -> str | None:
+    """Resolve optional LocalAI API-key authentication."""
+    token = os.environ.get("LOCALAI_API_KEY")
+    if token:
+        return token
+    api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
+    return resolve_secret("LOCALAI_API_KEY", api_key_ref) if api_key_ref else None
+
+
+def resolve_localai_api_key(cfg: dict) -> str | None:
+    """Resolve the LocalAI key at startup, only when a LocalAI provider is selected."""
+    uses_localai = (cfg.get("transcription") or {}).get("provider") == "localai" or (
+        cfg.get("ai") or {}
+    ).get("provider") == "localai"
+    return _resolve_localai_api_key(cfg) if uses_localai else None
+
+
+def _localai_url(cfg: dict) -> str:
+    """LocalAI base URL; LOCALAI_URL overrides config for chat and transcription."""
+    return os.environ.get("LOCALAI_URL") or cfg["localai"]["url"]
+
+
+def resolve_bridge_token(cfg: dict) -> str | None:
+    """Resolve the bridge token once at startup, only when the bridge is used."""
+    if (cfg.get("transcription") or {}).get("provider", "bridge") != "bridge":
+        return None
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    if token:
+        return token
+    bridge_cfg = cfg.get("bridge") or {}
+    return resolve_secret("BRIDGE_AUTH_TOKEN", bridge_cfg["auth_token_op_ref"])
+
+
+def check_localai_container_config(cfg: dict) -> None:
+    """Fail fast when a container would send LocalAI requests to its own loopback."""
+    uses_localai = (cfg.get("transcription") or {}).get("provider") == "localai" or (
+        cfg.get("ai") or {}
+    ).get("provider") == "localai"
+    if not uses_localai or os.environ.get("LOCALAI_URL"):
+        return
+    if not Path("/.dockerenv").exists():
+        return
+    host = urlparse((cfg.get("localai") or {}).get("url", "")).hostname
+    if host in (None, "127.0.0.1", "localhost", "::1"):
+        raise ValueError(
+            "LocalAI is selected but LOCALAI_URL is unset; inside a container "
+            "localai.url points at the container itself. Set LOCALAI_URL in .env."
+        )
+
+
+def _transcript_label(provider: str) -> str:
+    """Filename label for generated transcripts; bridge keeps its parakeet name."""
+    return "localai" if provider == "localai" else "parakeet"
+
+
+def _resolve_claude_oauth_token(cfg: dict) -> str | None:
+    """Resolve Claude Code auth when the Claude chat provider is selected."""
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        return token
+    oauth_token_ref = (cfg.get("claude") or {}).get("oauth_token_op_ref")
+    return (
+        resolve_secret("CLAUDE_CODE_OAUTH_TOKEN", oauth_token_ref)
+        if oauth_token_ref
+        else None
+    )
+
+
+def _summarize_with_localai(
+    transcript_text: str, cfg: dict, api_key: str | None
+) -> str:
+    prompt = (
+        (Path(__file__).resolve().parent.parent / "prompts" / "summary_prompt.txt")
+        .read_text()
+        .format(transcription=transcript_text[:150000])
+    )
+    # Failures raise so playlist jobs are retried instead of publishing a
+    # placeholder note that would never be regenerated.
+    output = localai_client.chat_completion(
+        prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
+    )
+    idx = output.find("## SUMMARY")
+    if idx == -1:
+        raise localai_client.LocalAIRequestError(
+            "LocalAI summary response missing the '## SUMMARY' heading"
+        )
+    return output[idx:]
+
+
+def _generate_tags_with_localai(
+    transcript_text: str, cfg: dict, api_key: str | None
+) -> list[str]:
+    prompt = (
+        (Path(__file__).resolve().parent.parent / "prompts" / "tags_prompt.txt")
+        .read_text()
+        .format(transcription=transcript_text[:150000])
+    )
+    output = localai_client.chat_completion(
+        prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
+    )
+    tags = []
+    for line in output.splitlines():
+        raw_line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()
+        # Same guard as the Claude path: reject sentence-like preamble lines.
+        if not raw_line or any(c in raw_line for c in ".!?:;"):
+            continue
+        tag = _sanitize_tag(raw_line)
+        if tag and len(tag) <= _MAX_TAG_LENGTH and tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+# Kept as public patch points for users of this module and its test suite.
+def summarize_with_claude(
+    command: str, transcript_text: str, oauth_token: str | None
+) -> str:
+    return _claude_summary(command, transcript_text, oauth_token)
+
+
+def generate_tags_with_claude(
+    command: str, transcript_text: str, oauth_token: str | None
+) -> list[str]:
+    return _claude_tags(command, transcript_text, oauth_token)
+
+
+def _transcribe_audio(
+    audio_path: Path,
+    model: str,
+    url: str,
+    token: str | None,
+    provider: str,
+) -> tuple[str, str]:
+    if provider == "localai":
+        return localai_client.transcribe_audio(audio_path, model, url, token)
+    if provider == "bridge":
+        if not token:
+            raise ValueError("The bridge transcription provider requires an auth token")
+        return bridge_client.transcribe_audio(audio_path, model, url, token)
+    raise ValueError("transcription.provider must be 'bridge' or 'localai'")
+
 
 # SSRF protection: explicit allowlist of trusted extractors for yt-dlp.
 # Excludes 'generic' extractor which can fetch arbitrary embedded URLs.
@@ -675,9 +817,10 @@ class ProviderResolution:
 def _resolve_local_file(
     local_path: Path,
     item_hint: dict,
-    bridge_url: str,
-    bridge_token: str,
+    localai_url: str,
+    localai_api_key: str | None,
     model_id: str,
+    transcription_provider: str,
 ) -> ProviderResolution:
     title = item_hint.get("title") or local_path.stem
 
@@ -687,10 +830,10 @@ def _resolve_local_file(
         text = srt_to_plain_text(sidecar)
         lang = "sidecar"
     else:
-        raw, text = bridge_client.transcribe_audio(
-            local_path, model_id, bridge_url, bridge_token
+        raw, text = _transcribe_audio(
+            local_path, model_id, localai_url, localai_api_key, transcription_provider
         )
-        lang = "parakeet"
+        lang = _transcript_label(transcription_provider)
 
     return ProviderResolution(
         title=title,
@@ -706,9 +849,10 @@ def _resolve_youtube(
     item_hint: dict,
     cfg: dict,
     workdir: Path,
-    bridge_url: str,
-    bridge_token: str,
+    localai_url: str,
+    localai_api_key: str | None,
     model_id: str,
+    transcription_provider: str,
 ) -> ProviderResolution:
     video_id = item_hint.get("video_id") or extract_youtube_video_id(raw_input)
     source_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -728,10 +872,14 @@ def _resolve_youtube(
         # transcribing it locally instead of giving up.
         audio_path = download_audio_via_ytdlp(source_url, workdir)
         if audio_path is not None:
-            raw, text = bridge_client.transcribe_audio(
-                audio_path, model_id, bridge_url, bridge_token
+            raw, text = _transcribe_audio(
+                audio_path,
+                model_id,
+                localai_url,
+                localai_api_key,
+                transcription_provider,
             )
-            lang = "parakeet"
+            lang = _transcript_label(transcription_provider)
 
     return ProviderResolution(
         title=title,
@@ -749,9 +897,10 @@ def _resolve_generic_link(
     item_hint: dict,
     cfg: dict,
     workdir: Path,
-    bridge_url: str,
-    bridge_token: str,
+    localai_url: str,
+    localai_api_key: str | None,
     model_id: str,
+    transcription_provider: str,
 ) -> ProviderResolution:
     """Any yt-dlp-supported URL that isn't YouTube, Overcast, or a Spotify
     episode.
@@ -790,10 +939,14 @@ def _resolve_generic_link(
             else download_audio_via_ytdlp(raw_input, workdir, restrict_extractors=True)
         )
         if media_path is not None:
-            raw, text = bridge_client.transcribe_audio(
-                media_path, model_id, bridge_url, bridge_token
+            raw, text = _transcribe_audio(
+                media_path,
+                model_id,
+                localai_url,
+                localai_api_key,
+                transcription_provider,
             )
-            lang = "parakeet"
+            lang = _transcript_label(transcription_provider)
             if title is None:
                 title = media_path.stem
 
@@ -815,9 +968,10 @@ def _resolve_overcast(
     item_hint: dict,
     cfg: dict,
     workdir: Path,
-    bridge_url: str,
-    bridge_token: str,
+    localai_url: str,
+    localai_api_key: str | None,
     model_id: str,
+    transcription_provider: str,
 ) -> ProviderResolution:
     """Overcast episode page: resolve_overcast_episode() finds the real RSS
     mp3 enclosure (Overcast doesn't host audio itself), then transcribes it
@@ -832,7 +986,14 @@ def _resolve_overcast(
             "Could not resolve Overcast episode %s; falling back to yt-dlp", raw_input
         )
         return _resolve_generic_link(
-            raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+            raw_input,
+            item_hint,
+            cfg,
+            workdir,
+            localai_url,
+            localai_api_key,
+            model_id,
+            transcription_provider,
         )
 
     resolved_title, mp3_url, resolved_published_at = overcast_resolved
@@ -842,8 +1003,8 @@ def _resolve_overcast(
         published_at = resolved_published_at
 
     media_path = download_direct_file(mp3_url, workdir)
-    raw, text = bridge_client.transcribe_audio(
-        media_path, model_id, bridge_url, bridge_token
+    raw, text = _transcribe_audio(
+        media_path, model_id, localai_url, localai_api_key, transcription_provider
     )
     return ProviderResolution(
         title=title,
@@ -852,7 +1013,7 @@ def _resolve_overcast(
         published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
-        lang="parakeet",
+        lang=_transcript_label(transcription_provider),
     )
 
 
@@ -861,9 +1022,10 @@ def _resolve_spotify(
     item_hint: dict,
     cfg: dict,
     workdir: Path,
-    bridge_url: str,
-    bridge_token: str,
+    localai_url: str,
+    localai_api_key: str | None,
     model_id: str,
+    transcription_provider: str = "bridge",
 ) -> ProviderResolution:
     """Spotify podcast episode: metadata via spotify_client.py, transcript
     or audio via podcast_rss.py's RSS/Podcasting-2.0 discovery.
@@ -940,8 +1102,8 @@ def _resolve_spotify(
     # audio (not Spotify's stream) through the same local Parakeet path
     # every other source uses.
     media_path = download_direct_file(enclosure_url, workdir)
-    raw, text = bridge_client.transcribe_audio(
-        media_path, model_id, bridge_url, bridge_token
+    raw, text = _transcribe_audio(
+        media_path, model_id, localai_url, localai_api_key, transcription_provider
     )
     return ProviderResolution(
         title=title,
@@ -950,7 +1112,7 @@ def _resolve_spotify(
         published_at=published_at,
         raw_transcript_body=raw,
         transcript_text=text,
-        lang="parakeet",
+        lang=_transcript_label(transcription_provider),
         extra_frontmatter=extra_frontmatter,
     )
 
@@ -966,6 +1128,7 @@ def process_input(
     item_hint: dict | None = None,
     github_token: str | None = None,
     bridge_token: str | None = None,
+    localai_api_key: str | None = None,
 ) -> dict:
     """
     Process a media input through transcription, summarization, and GitHub publication.
@@ -976,7 +1139,8 @@ def process_input(
         item_hint (dict | None): Optional known metadata such as ``title``,
             ``published_at``, or ``video_id``.
         github_token (str | None): Optional pre-resolved GitHub authentication token.
-        bridge_token (str | None): Optional pre-resolved bridge service authentication token.
+        localai_api_key (str | None): Optional pre-resolved LocalAI API key.
+        bridge_token (str | None): Optional pre-resolved bridge authentication token.
 
     Returns:
         dict: Metadata containing ``title``, ``source_type``, ``note_path``, and
@@ -995,19 +1159,48 @@ def process_input(
         "local_file" if local_path is not None else detect_input_type(raw_input)
     )
 
-    trans_cfg = cfg.get("transcription", {}) or {}
-    model_id = trans_cfg.get("model", "mlx-community/parakeet-tdt-0.6b-v3")
+    trans_cfg = cfg.get("transcription") or {}
+    transcription_provider = trans_cfg.get("provider", "bridge")
+    if transcription_provider == "localai":
+        localai_cfg = cfg.get("localai") or {}
+        if not localai_cfg.get("url") or not localai_cfg.get("transcription_model"):
+            raise ValueError(
+                "localai transcription requires localai.url and localai.transcription_model"
+            )
+        model_id = localai_cfg["transcription_model"]
+        transcription_url = _localai_url(cfg)
+        if localai_api_key is None:
+            localai_api_key = _resolve_localai_api_key(cfg)
+        transcription_token = localai_api_key
+    elif transcription_provider == "bridge":
+        bridge_cfg = cfg.get("bridge") or {}
+        has_token = bridge_token or os.environ.get("BRIDGE_AUTH_TOKEN")
+        if not (os.environ.get("BRIDGE_URL") or bridge_cfg.get("url")):
+            raise ValueError("bridge transcription requires bridge.url")
+        if not has_token and not bridge_cfg.get("auth_token_op_ref"):
+            raise ValueError(
+                "bridge transcription requires bridge.auth_token_op_ref or BRIDGE_AUTH_TOKEN"
+            )
+        model_id = trans_cfg.get("model", "mlx-community/parakeet-tdt-0.6b-v3")
+        transcription_url = os.environ.get("BRIDGE_URL") or bridge_cfg["url"]
+        transcription_token = bridge_token or os.environ.get("BRIDGE_AUTH_TOKEN")
+        if not transcription_token:
+            transcription_token = resolve_secret(
+                "BRIDGE_AUTH_TOKEN", bridge_cfg["auth_token_op_ref"]
+            )
+    else:
+        raise ValueError("transcription.provider must be 'bridge' or 'localai'")
 
-    # BRIDGE_URL env var overrides config.yaml's bridge.url, same
-    # env-first pattern as resolve_secret() - lets a single config.yaml
-    # work for both native testing (127.0.0.1) and containerized use
-    # (host.docker.internal, the config.yaml default) without editing
-    # the file to switch between them.
-    bridge_url = os.environ.get("BRIDGE_URL") or cfg["bridge"]["url"]
-    if bridge_token is None:
-        bridge_token = resolve_secret(
-            "BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"]
-        )
+    # Validate the chat provider before the expensive download/transcription.
+    ai_provider = (cfg.get("ai") or {}).get("provider", "claude")
+    if ai_provider not in ("claude", "localai"):
+        raise ValueError("ai.provider must be 'claude' or 'localai'")
+    if ai_provider == "localai":
+        localai_cfg = cfg.get("localai") or {}
+        if not localai_cfg.get("chat_model"):
+            raise ValueError("LocalAI chat requires localai.chat_model")
+        if not (os.environ.get("LOCALAI_URL") or localai_cfg.get("url")):
+            raise ValueError("LocalAI chat requires localai.url or LOCALAI_URL")
 
     with tempfile.TemporaryDirectory(prefix="pipeline-") as tmp:
         workdir = Path(tmp)
@@ -1015,23 +1208,56 @@ def process_input(
         if source_type == "local_file":
             assert local_path is not None
             resolution = _resolve_local_file(
-                local_path, item_hint, bridge_url, bridge_token, model_id
+                local_path,
+                item_hint,
+                transcription_url,
+                transcription_token,
+                model_id,
+                transcription_provider,
             )
         elif source_type == "youtube":
             resolution = _resolve_youtube(
-                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+                raw_input,
+                item_hint,
+                cfg,
+                workdir,
+                transcription_url,
+                transcription_token,
+                model_id,
+                transcription_provider,
             )
         elif source_type == "overcast":
             resolution = _resolve_overcast(
-                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+                raw_input,
+                item_hint,
+                cfg,
+                workdir,
+                transcription_url,
+                transcription_token,
+                model_id,
+                transcription_provider,
             )
         elif source_type == "spotify":
             resolution = _resolve_spotify(
-                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+                raw_input,
+                item_hint,
+                cfg,
+                workdir,
+                transcription_url,
+                transcription_token,
+                model_id,
+                transcription_provider,
             )
         else:  # generic_link
             resolution = _resolve_generic_link(
-                raw_input, item_hint, cfg, workdir, bridge_url, bridge_token, model_id
+                raw_input,
+                item_hint,
+                cfg,
+                workdir,
+                transcription_url,
+                transcription_token,
+                model_id,
+                transcription_provider,
             )
 
         title = resolution.title
@@ -1058,10 +1284,24 @@ def process_input(
 
     log.info("Got transcript for %r via %s (%s)", title, source_type, lang)
 
-    summary = bridge_client.summarize(transcript_text, bridge_url, bridge_token)
-    content_tags = bridge_client.generate_tags(
-        transcript_text, bridge_url, bridge_token
-    )
+    ai_cfg = cfg.get("ai") or {}
+    if ai_cfg.get("provider", "claude") == "localai":
+        if not (cfg.get("localai") or {}).get("chat_model"):
+            raise ValueError("LocalAI chat requires localai.chat_model")
+        chat_api_key = localai_api_key or _resolve_localai_api_key(cfg)
+        summary = _summarize_with_localai(transcript_text, cfg, chat_api_key)
+        content_tags = _generate_tags_with_localai(transcript_text, cfg, chat_api_key)
+    elif ai_cfg.get("provider", "claude") == "claude":
+        claude_cfg = cfg.get("claude") or {}
+        claude_oauth_token = _resolve_claude_oauth_token(cfg)
+        summary = summarize_with_claude(
+            claude_cfg.get("command", "claude"), transcript_text, claude_oauth_token
+        )
+        content_tags = generate_tags_with_claude(
+            claude_cfg.get("command", "claude"), transcript_text, claude_oauth_token
+        )
+    else:
+        raise ValueError("ai.provider must be 'claude' or 'localai'")
 
     if github_token is None:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
