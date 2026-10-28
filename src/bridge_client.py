@@ -1,8 +1,8 @@
 """
 Container-safe HTTP client for host_bridge.py - the host-native,
 transcription-only service running with Parakeet/MLX on the remote Mac.
-Summarization and tagging run locally in the pipeline container through
-``claude_client.py``. This module intentionally has no MLX/parakeet or
+Used when ``transcription.provider`` is ``bridge``; summaries and tags come
+from ``claude_client.py`` or LocalAI per ``ai.provider``. This module intentionally has no MLX/parakeet or
 Claude Code dependency; it only sends audio to the private bridge.
 """
 

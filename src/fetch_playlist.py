@@ -17,7 +17,6 @@ See README.md for full setup instructions.
 
 import argparse
 import logging
-import os
 import subprocess
 import sys
 import time
@@ -41,6 +40,7 @@ from core import (
 from pipeline import (
     check_localai_container_config,
     resolve_bridge_token,
+    resolve_localai_api_key,
     NoTranscriptAvailableError,
     process_input,
 )
@@ -156,12 +156,7 @@ def _run_once_locked(cfg: dict) -> None:
     try:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
         bridge_token = resolve_bridge_token(cfg)
-        localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
-        localai_api_key = (
-            resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
-            if localai_api_key_ref or os.environ.get("LOCALAI_API_KEY")
-            else None
-        )
+        localai_api_key = resolve_localai_api_key(cfg)
     except subprocess.CalledProcessError:
         log.error("Failed to read a secret from 1Password")
         sys.exit(1)

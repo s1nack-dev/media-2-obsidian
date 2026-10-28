@@ -2,7 +2,7 @@
 """Private, host-native transcription bridge for an Apple Silicon Mac.
 
 The pipeline container sends audio to this service over a Tailscale Serve
-endpoint. The service remains bound to loopback; only Parakeet/MLX and the
+endpoint. The service binds loopback by default; only Parakeet/MLX and the
 bridge bearer token exist on this Mac. Claude Code summary/tag generation is
 intentionally performed by the pipeline container instead.
 """
@@ -31,9 +31,10 @@ REQUEST_TIMEOUT_SECONDS = 1800
 
 def make_handler(cfg: dict, auth_token: str):
     """Create a handler restricted to the configured, preloaded model."""
-    allowed_model_id = (cfg.get("transcription") or {}).get("model")
-    if not allowed_model_id:
-        raise ValueError("config.yaml is missing transcription.model")
+    # Same default as pipeline.py, so configs that omit the key keep working.
+    allowed_model_id = (cfg.get("transcription") or {}).get(
+        "model", "mlx-community/parakeet-tdt-0.6b-v3"
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -135,7 +136,8 @@ def main():
     parser.add_argument(
         "--host",
         default="127.0.0.1",
-        help="Loopback only; expose remotely with private Tailscale Serve, never a LAN bind.",
+        help="Bind address. Keep the 127.0.0.1 default and expose remotely with "
+        "Tailscale Serve; non-loopback values are not blocked.",
     )
     parser.add_argument("--port", type=int, default=None, help="Overrides bridge.port.")
     args = parser.parse_args()

@@ -75,3 +75,19 @@ def test_transcribe_audio_surfaces_bridge_error_detail(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge_client, "urlopen", fake)
     with pytest.raises(bridge_client.BridgeRequestError, match="bad audio format"):
         bridge_client.transcribe_audio(audio, "model", "http://bridge", "token")
+
+
+def test_transcribe_audio_surfaces_plain_text_error(monkeypatch, tmp_path):
+    import io
+
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"audio")
+
+    def fake(request, timeout):
+        raise HTTPError(
+            request.full_url, 502, "Bad Gateway", {}, io.BytesIO(b"upstream down")
+        )
+
+    monkeypatch.setattr(bridge_client, "urlopen", fake)
+    with pytest.raises(bridge_client.BridgeRequestError, match="502|upstream down"):
+        bridge_client.transcribe_audio(audio, "model", "http://bridge", "token")

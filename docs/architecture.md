@@ -5,10 +5,12 @@ config keys, secrets, scheduling, and per-file behavior, see [`CLAUDE.md`](../CL
 
 ## 1. Components
 
-The system splits along one hard constraint: `host_bridge.py` and its MLX
-transcription backend need to run natively on an Apple Silicon Mac. Claude Code
-runs in the pipeline container with a deployment-injected OAuth token, so the
-Mac is a transcription-only appliance.
+Providers are selected per capability. With the defaults
+(`transcription.provider: bridge`, `ai.provider: claude`), fallback
+transcription needs `host_bridge.py` and its MLX backend running natively on an
+Apple Silicon Mac, and Claude Code runs wherever the pipeline runs. Selecting
+`localai` for either capability sends that work to a LocalAI server instead, so
+the Mac bridge is optional (see [dual-provider architecture](dual-provider-architecture.md)).
 
 ```mermaid
 flowchart TB
@@ -44,17 +46,18 @@ flowchart TB
     bridgeclient -- "HTTP, auth-token-gated" --> bridge
     bridge --> transcribe
     bridge --> core
-    claude -. "claude -p (sandboxed)" .-> claudeCLI(["Claude CLI"])
+    claude -. "claude -p (Seatbelt on macOS, CLI safe mode in containers)" .-> claudeCLI(["Claude CLI"])
     transcribe -. "MLX" .-> parakeet(["Parakeet model"])
 
     style hostonly fill:#2d1b1b,stroke:#a33
     style portable fill:#1b2d1e,stroke:#3a3
 ```
 
-**Why this shape:** `pipeline.py` never talks to MLX or the Claude CLI directly — it
-calls `bridge_client.py`, which calls `host_bridge.py` over HTTP. That indirection is
-the entire reason `pipeline.py`/`fetch_playlist.py`/`server.py` can run in a container
-while transcription and summarization still happen on the Mac. `spotify_client.py` and
+**Why this shape:** `pipeline.py` never talks to MLX directly — for transcription it
+calls `bridge_client.py`, which calls `host_bridge.py` over HTTP (or `localai_client.py`
+when LocalAI is selected). That indirection is what lets `pipeline.py`/`fetch_playlist.py`/
+`server.py` run in a container while Parakeet transcription stays on the Mac. Summaries
+and tags run in the pipeline process itself, through the Claude CLI or LocalAI. `spotify_client.py` and
 `podcast_rss.py` are pure metadata/HTTP adapters (no MLX/Claude dependency either) —
 they only ever hand `pipeline.py` a transcript or an audio URL to feed into the same
 `bridge_client` path every other source uses. `core.py`'s `open_pinned()`/`safe_fetch()`

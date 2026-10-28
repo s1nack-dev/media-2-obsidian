@@ -62,17 +62,6 @@ API keys and set `LOCALAI_API_KEY` if that is more access than you want.
 See the [dual-provider architecture](docs/dual-provider-architecture.md) for
 the component, request-flow, and migration diagrams.
 
-### Durable playlist job ledger
-
-Playlist mode stores a JSON job ledger in `state_file`, alongside its existing
-deduplication and retry data. The file is atomically replaced while holding the
-pipeline lock. Each job records its current step (`transcript`, `summary`,
-`subtitle_publish`, or `note_publish`), attempt count, error, and published
-paths. A job left `running` by an interrupted process is marked `retrying` on
-the next playlist pass and is retried through the normal idempotent publish
-path. This is intentionally a single-worker, single-machine durability layer;
-move to a database/workflow engine once concurrent workers or cross-service
-queries are needed.
 
 ## What you need
 
@@ -290,13 +279,12 @@ Edit `config.yaml`:
   blank to skip this entirely.
 - Everything else has sane defaults.
 
-Note: the first time transcription actually runs for a given
-`transcription.model`, it's downloaded (~2.3 GB for the default model)
-from Hugging Face to its local cache — that first run will be slower and
-needs network access. This isn't a hang. Every run after that loads the
-model straight from the local cache with no network calls at all —
-transcription itself always runs fully locally regardless (no audio is
-ever sent anywhere).
+Note: the bridge never downloads models on its own. Download the
+`transcription.model` (~2.3 GB for the default) once before first use with
+`uv run python src/preload_transcription_model.py --config config.yaml`
+(add `--hf-home` if the bridge runs with a different `HF_HOME`). After that
+the model loads from the local cache with no network calls, and audio never
+leaves the Mac.
 
 ## 7. Test it manually
 
@@ -407,9 +395,9 @@ URL via [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/con
 (Docker Desktop's Linux VM can't provide that). It stays behind
 `host_bridge.py`, a small transcription-only HTTP service that runs natively
 on the Mac; the containers call it over HTTP. Claude summaries and tags run
-inside the pipeline container. **Start
-`host_bridge.py` before the containers** — they'll fail every job with a
-connection error to `host.docker.internal` until it's up.
+inside the pipeline container. **With `transcription.provider: bridge` (the
+default), start `host_bridge.py` before the containers** — they'll fail every
+job that needs transcription until it's up. LocalAI-only setups don't need it.
 
 You don't need this section at all if you're happy with native
 `fetch_playlist.py` (cron) + `pipeline.py --input` (manual) as set up in

@@ -14,7 +14,8 @@
 # and this image never needs `op` installed at all.
 #
 # Build:
-#   docker build -t youtube-obsidian-pipeline -f Dockerfile .
+#   docker build --build-arg CLAUDE_CODE_VERSION=<exact version> \
+#     -t youtube-obsidian-pipeline -f Dockerfile .
 # (build context is the repo root - see docker-compose.yml, which sets
 #  `context: ..` from docker/)
 

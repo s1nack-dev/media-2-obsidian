@@ -94,6 +94,14 @@ def _resolve_localai_api_key(cfg: dict) -> str | None:
     return resolve_secret("LOCALAI_API_KEY", api_key_ref) if api_key_ref else None
 
 
+def resolve_localai_api_key(cfg: dict) -> str | None:
+    """Resolve the LocalAI key at startup, only when a LocalAI provider is selected."""
+    uses_localai = (cfg.get("transcription") or {}).get("provider") == "localai" or (
+        cfg.get("ai") or {}
+    ).get("provider") == "localai"
+    return _resolve_localai_api_key(cfg) if uses_localai else None
+
+
 def _localai_url(cfg: dict) -> str:
     """LocalAI base URL; LOCALAI_URL overrides config for chat and transcription."""
     return os.environ.get("LOCALAI_URL") or cfg["localai"]["url"]
@@ -1161,9 +1169,12 @@ def process_input(
         transcription_token = localai_api_key
     elif transcription_provider == "bridge":
         bridge_cfg = cfg.get("bridge") or {}
-        if not bridge_cfg.get("url") or not bridge_cfg.get("auth_token_op_ref"):
+        has_token = bridge_token or os.environ.get("BRIDGE_AUTH_TOKEN")
+        if not (os.environ.get("BRIDGE_URL") or bridge_cfg.get("url")):
+            raise ValueError("bridge transcription requires bridge.url")
+        if not has_token and not bridge_cfg.get("auth_token_op_ref"):
             raise ValueError(
-                "bridge transcription requires bridge.url and bridge.auth_token_op_ref"
+                "bridge transcription requires bridge.auth_token_op_ref or BRIDGE_AUTH_TOKEN"
             )
         model_id = trans_cfg.get("model", "mlx-community/parakeet-tdt-0.6b-v3")
         transcription_url = os.environ.get("BRIDGE_URL") or bridge_cfg["url"]
@@ -1177,8 +1188,12 @@ def process_input(
     ai_provider = (cfg.get("ai") or {}).get("provider", "claude")
     if ai_provider not in ("claude", "localai"):
         raise ValueError("ai.provider must be 'claude' or 'localai'")
-    if ai_provider == "localai" and not (cfg.get("localai") or {}).get("chat_model"):
-        raise ValueError("LocalAI chat requires localai.chat_model")
+    if ai_provider == "localai":
+        localai_cfg = cfg.get("localai") or {}
+        if not localai_cfg.get("chat_model"):
+            raise ValueError("LocalAI chat requires localai.chat_model")
+        if not (os.environ.get("LOCALAI_URL") or localai_cfg.get("url")):
+            raise ValueError("LocalAI chat requires localai.url or LOCALAI_URL")
 
     with tempfile.TemporaryDirectory(prefix="pipeline-") as tmp:
         workdir = Path(tmp)

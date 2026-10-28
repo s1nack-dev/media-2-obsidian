@@ -4,8 +4,9 @@ Small HTTP server exposing pipeline.process_input() over the network, meant
 to sit behind a Cloudflare Tunnel (cloudflared) so a POST to a public URL
 can trigger processing of a YouTube URL or other link.
 
-Runs either natively or in a container. The pipeline sends transcription and
-chat requests to the configured LocalAI service.
+Runs either natively or in a container. Fallback transcription goes to
+host_bridge.py (the default) or LocalAI, and summaries/tags to the Claude CLI
+(the default) or LocalAI, per transcription.provider and ai.provider.
 
 Requests are queued and handled one at a time by a single background
 worker thread: process_input() shares the same on-disk git clones across
@@ -25,7 +26,6 @@ no business asking this Mac to read/transcribe an arbitrary local file.
 import argparse
 import json
 import logging
-import os
 import queue
 import secrets
 import sys
@@ -45,6 +45,7 @@ from core import (
 from pipeline import (
     check_localai_container_config,
     resolve_bridge_token,
+    resolve_localai_api_key,
     NoTranscriptAvailableError,
     detect_input_type,
     process_input,
@@ -268,12 +269,7 @@ def main():
     auth_token = resolve_secret("WEBHOOK_AUTH_TOKEN", auth_token_ref)
     github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
     bridge_token = resolve_bridge_token(cfg)
-    localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
-    localai_api_key = (
-        resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
-        if localai_api_key_ref or os.environ.get("LOCALAI_API_KEY")
-        else None
-    )
+    localai_api_key = resolve_localai_api_key(cfg)
 
     port = args.port or webhook_cfg.get("port", 8080)
 

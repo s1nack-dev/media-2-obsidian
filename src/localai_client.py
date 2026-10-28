@@ -1,6 +1,7 @@
 """Small standard-library client for LocalAI's OpenAI-compatible API."""
 
 import json
+from http.client import HTTPException
 import mimetypes
 import re
 import uuid
@@ -56,7 +57,7 @@ def _error_detail(body: bytes) -> str:
             return str(error)
     except (json.JSONDecodeError, UnicodeDecodeError):
         pass
-    return body.decode("utf-8", "replace")[-1000:]
+    return body.decode("utf-8", "replace")[:1000]
 
 
 def _post(url: str, data: bytes, headers: dict[str, str], timeout: int) -> bytes:
@@ -69,7 +70,7 @@ def _post(url: str, data: bytes, headers: dict[str, str], timeout: int) -> bytes
         raise LocalAIRequestError(
             f"LocalAI {path} failed with HTTP {exc.code}: {_error_detail(exc.read())[:200]}"
         ) from exc
-    except (URLError, TimeoutError, OSError) as exc:
+    except (URLError, HTTPException, TimeoutError, OSError) as exc:
         raise LocalAIRequestError(f"LocalAI {path} unreachable: {exc}") from exc
     if len(body) > MAX_RESPONSE_BYTES:
         raise LocalAIRequestError(

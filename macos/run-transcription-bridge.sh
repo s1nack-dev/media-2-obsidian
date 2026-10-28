@@ -30,4 +30,4 @@ mkdir -p "$TMPDIR" "$HF_HOME"
 
 exec /usr/bin/sandbox-exec -f "$PROFILE" \
   "$PYTHON_BIN" "$REPO_PATH/src/host_bridge.py" \
-  --config "$REPO_PATH/config.yaml" --host 127.0.0.1 --port 8081
+  --config "$REPO_PATH/config.yaml" --host 127.0.0.1

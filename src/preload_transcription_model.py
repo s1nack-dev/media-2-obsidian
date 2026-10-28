@@ -3,9 +3,9 @@
 
 import argparse
 import logging
+import os
 
 from core import load_config
-from transcribe_backend import preload_model
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -15,11 +15,20 @@ logging.basicConfig(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml")
+    parser.add_argument(
+        "--hf-home",
+        help="Hugging Face cache dir; must match the bridge launcher's HF_HOME.",
+    )
     args = parser.parse_args()
+    if args.hf_home:
+        # Must be set before huggingface_hub reads its constants.
+        os.environ["HF_HOME"] = args.hf_home
     cfg = load_config(args.config)
     model_id = (cfg.get("transcription") or {}).get("model")
     if not model_id:
         parser.error("config.yaml is missing transcription.model")
+    from transcribe_backend import preload_model
+
     preload_model(model_id)
     logging.info("Preloaded transcription model %s.", model_id)
 

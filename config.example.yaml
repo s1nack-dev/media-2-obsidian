@@ -57,7 +57,9 @@ localai:
   # Check the exact names with: curl -s http://127.0.0.1:8081/v1/models
   transcription_model: "parakeet"
   chat_model: "minicpm5-1b-claude-opus-fable5-v2-thinking"
-  # Leave blank if LocalAI is only reachable on a trusted private network.
+  # The client refuses plain http:// except for 127.0.0.1/localhost, so remote
+  # LocalAI (e.g. the Tailscale Serve URL) must use https:// and the key never
+  # travels in cleartext. Leave blank if LocalAI is only reachable on a trusted private network.
   # Otherwise put an API-key reference here; LOCALAI_API_KEY takes precedence.
   api_key_op_ref: ""
 

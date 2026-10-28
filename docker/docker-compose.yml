@@ -21,6 +21,7 @@
 # Usage:
 #   cp ../.env.example ../.env
 #   # fill in TUNNEL_TOKEN, GITHUB_TOKEN, BRIDGE_AUTH_TOKEN, LOCALAI_API_KEY (if configured),
+#   # LOCALAI_URL (if LocalAI is selected), CLAUDE_CODE_VERSION, CLAUDE_CODE_OAUTH_TOKEN,
 #   # WEBHOOK_AUTH_TOKEN (all as op:// references - see .env.example),
 #   # and the two *_REPO_HOST_PATH vars (must match config.yaml's repo
 #   # paths exactly)
@@ -69,7 +70,7 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
       - LOCALAI_URL=${LOCALAI_URL:-}
-      - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
+      - BRIDGE_URL=${BRIDGE_URL:-}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
     volumes:
       - ../config.yaml:/app/config.yaml:ro
@@ -98,7 +99,7 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - LOCALAI_API_KEY=${LOCALAI_API_KEY:-}
       - LOCALAI_URL=${LOCALAI_URL:-}
-      - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
+      - BRIDGE_URL=${BRIDGE_URL:-}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
       - PIPELINE_STATE_FILE=/app/.pipeline-runtime/state.json
     volumes:

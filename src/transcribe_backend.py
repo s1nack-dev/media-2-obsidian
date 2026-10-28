@@ -41,8 +41,9 @@ def get_model(model_id: str) -> BaseParakeet:
             _MODEL_CACHE[model_id] = parakeet_mlx.from_pretrained(model_id)
         except Exception as exc:
             raise RuntimeError(
-                f"Parakeet model {model_id!r} is not available in the local cache. "
-                "Run the controlled preload_transcription_model.py maintenance step first."
+                f"Parakeet model {model_id!r} could not be loaded from the local cache "
+                f"({type(exc).__name__}: {exc}). If it was never downloaded, run "
+                "preload_transcription_model.py first with the bridge's HF_HOME."
             ) from exc
         finally:
             hf_constants.HF_HUB_OFFLINE = previous_offline

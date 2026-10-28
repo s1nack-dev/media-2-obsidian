@@ -44,7 +44,7 @@ def test_transcribe_audio_uses_openai_compatible_multipart_endpoint(
     assert b'name="model"' in seen["body"]
     assert b"parakeet-110m" in seen["body"]
     assert b'name="response_format"' in seen["body"]
-    assert b"srt" in seen["body"]
+    assert b'name="response_format"\r\n\r\nsrt\r\n' in seen["body"]
 
 
 def test_chat_completion_uses_openai_compatible_endpoint(monkeypatch):
@@ -109,3 +109,35 @@ def test_plain_http_only_allowed_for_loopback():
     localai_client._validate_url("https://host.tailnet.ts.net")
     with pytest.raises(ValueError):
         localai_client._validate_url("http://100.64.0.1:8081")
+
+
+def test_http_error_becomes_localai_request_error(monkeypatch):
+    import io
+
+    import pytest
+    from urllib.error import HTTPError
+
+    def fail(request, timeout):
+        raise HTTPError(request.full_url, 503, "busy", {}, io.BytesIO(b"model loading"))
+
+    monkeypatch.setattr(localai_client._OPENER, "open", fail)
+    with pytest.raises(localai_client.LocalAIRequestError, match="503.*model loading"):
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+
+
+def test_non_http_scheme_rejected():
+    import pytest
+
+    with pytest.raises(ValueError):
+        localai_client._validate_url("ftp://127.0.0.1")
+
+
+def test_oversized_response_rejected(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(localai_client, "MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr(
+        localai_client._OPENER, "open", lambda request, timeout: Response(b"123456")
+    )
+    with pytest.raises(localai_client.LocalAIRequestError, match="exceeds"):
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
