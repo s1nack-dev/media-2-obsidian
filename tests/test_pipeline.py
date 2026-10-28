@@ -888,7 +888,7 @@ def test_localai_tags_skip_sentences_and_numbering(monkeypatch):
         "chat_completion",
         lambda *a, **k: "Here are the tags:\n1. Machine Learning\n- python\npython\n",
     )
-    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
     assert pipeline._generate_tags_with_localai("t", cfg, None) == [
         "machine-learning",
         "python",
@@ -904,7 +904,7 @@ def test_localai_url_env_override_applies_to_chat(monkeypatch):
 
     monkeypatch.setattr(pipeline.localai_client, "chat_completion", fake)
     monkeypatch.setenv("LOCALAI_URL", "https://example.ts.net")
-    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
     assert pipeline._summarize_with_localai("t", cfg, None).startswith("## SUMMARY")
     assert seen["url"] == "https://example.ts.net"
 
@@ -922,7 +922,7 @@ def test_invalid_ai_provider_fails_before_transcription(tmp_path):
     cfg = {
         "transcription": {"provider": "localai"},
         "ai": {"provider": "nope"},
-        "localai": {"url": "http://127.0.0.1:8081", "transcription_model": "parakeet"},
+        "localai": {"url": "http://127.0.0.1:8082", "transcription_model": "parakeet"},
     }
     with pytest.raises(ValueError, match="ai.provider"):
         pipeline.process_input(media, cfg, localai_api_key="k")
@@ -932,7 +932,7 @@ def test_localai_summary_failure_raises_for_retry(monkeypatch):
     monkeypatch.setattr(
         pipeline.localai_client, "chat_completion", lambda *a, **k: "no heading"
     )
-    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    cfg = {"localai": {"url": "http://127.0.0.1:8082", "chat_model": "m"}}
     with pytest.raises(pipeline.localai_client.LocalAIRequestError):
         pipeline._summarize_with_localai("t", cfg, None)
 
@@ -955,7 +955,7 @@ def test_container_without_localai_url_fails_fast(monkeypatch):
     monkeypatch.setattr(
         pipeline.Path, "exists", lambda self: str(self) == "/.dockerenv"
     )
-    cfg = {"ai": {"provider": "localai"}, "localai": {"url": "http://127.0.0.1:8081"}}
+    cfg = {"ai": {"provider": "localai"}, "localai": {"url": "http://127.0.0.1:8082"}}
     with pytest.raises(ValueError, match="LOCALAI_URL"):
         pipeline.check_localai_container_config(cfg)
     monkeypatch.setenv("LOCALAI_URL", "https://host.tailnet.ts.net")

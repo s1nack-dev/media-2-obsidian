@@ -49,12 +49,12 @@ spotify:
 localai:
   # OpenAI-compatible LocalAI server used for both fallback transcription and
   # summary/tag chat completions. LOCALAI_URL overrides this value at runtime.
-  # Native runs on the Mac: http://127.0.0.1:8081 (LocalAI binds localhost only).
+  # Native runs on the Mac: http://127.0.0.1:8082 (LocalAI binds localhost only).
   # Containers and other tailnet machines: the https://<your-host>.<tailnet>.ts.net
   # URL that Tailscale Serve exposes, since host.docker.internal can't reach it.
-  url: "http://127.0.0.1:8081"
+  url: "http://127.0.0.1:8082"
   # Names configured in LocalAI, not filenames or Hugging Face repo ids.
-  # Check the exact names with: curl -s http://127.0.0.1:8081/v1/models
+  # Check the exact names with: curl -s http://127.0.0.1:8082/v1/models
   transcription_model: "parakeet"
   chat_model: "minicpm5-1b-claude-opus-fable5-v2-thinking"
   # The client refuses plain http:// except for 127.0.0.1/localhost, so remote

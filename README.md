@@ -34,7 +34,7 @@ ai:
   provider: localai
 
 localai:
-  url: "http://127.0.0.1:8081" # native; containers use your https://...ts.net URL
+  url: "http://127.0.0.1:8082" # native; containers use your https://...ts.net URL
   transcription_model: "parakeet"
   chat_model: "minicpm5-1b-claude-opus-fable5-v2-thinking"
   api_key_op_ref: "" # optional; LOCALAI_API_KEY overrides this
@@ -43,17 +43,17 @@ localai:
 The pipeline then calls LocalAI's OpenAI-compatible
 `/v1/audio/transcriptions` endpoint requesting SRT and `/v1/chat/completions`
 for summaries and tags. Start and configure LocalAI independently. On macOS,
-LocalAI should bind `127.0.0.1:8081`, not `0.0.0.0:8080`: a wildcard bind fails
+LocalAI should bind `127.0.0.1:8082`, not `0.0.0.0:8080`: a wildcard bind fails
 when Tailscale already holds port 8080. To share LocalAI on your tailnet, proxy
 it with Tailscale Serve:
 
 ```bash
-tailscale serve --bg --https=443 http://127.0.0.1:8081
+tailscale serve --bg --https=443 http://127.0.0.1:8082
 ```
 
 Install a transcription model and a chat model in LocalAI before processing
 media. Its model names must match `localai.transcription_model` and
-`localai.chat_model`; list them with `curl -s http://127.0.0.1:8081/v1/models`.
+`localai.chat_model`; list them with `curl -s http://127.0.0.1:8082/v1/models`.
 You can leave one provider on the legacy path while migrating the other.
 
 Anyone on your tailnet can reach a Tailscale-served LocalAI. Enable LocalAI's

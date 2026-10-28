@@ -80,7 +80,7 @@ def test_transport_error_becomes_localai_request_error(monkeypatch):
 
     monkeypatch.setattr(localai_client._OPENER, "open", fail)
     with pytest.raises(localai_client.LocalAIRequestError):
-        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8082")
 
 
 def test_chat_response_without_choices_raises(monkeypatch):
@@ -90,7 +90,7 @@ def test_chat_response_without_choices_raises(monkeypatch):
         localai_client._OPENER, "open", lambda request, timeout: Response(b"{}")
     )
     with pytest.raises(localai_client.LocalAIRequestError):
-        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8082")
 
 
 def test_redirects_are_refused():
@@ -105,10 +105,10 @@ def test_redirects_are_refused():
 def test_plain_http_only_allowed_for_loopback():
     import pytest
 
-    localai_client._validate_url("http://127.0.0.1:8081")
+    localai_client._validate_url("http://127.0.0.1:8082")
     localai_client._validate_url("https://host.tailnet.ts.net")
     with pytest.raises(ValueError):
-        localai_client._validate_url("http://100.64.0.1:8081")
+        localai_client._validate_url("http://100.64.0.1:8082")
 
 
 def test_http_error_becomes_localai_request_error(monkeypatch):
@@ -122,7 +122,7 @@ def test_http_error_becomes_localai_request_error(monkeypatch):
 
     monkeypatch.setattr(localai_client._OPENER, "open", fail)
     with pytest.raises(localai_client.LocalAIRequestError, match="503.*model loading"):
-        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8082")
 
 
 def test_non_http_scheme_rejected():
@@ -140,4 +140,4 @@ def test_oversized_response_rejected(monkeypatch):
         localai_client._OPENER, "open", lambda request, timeout: Response(b"123456")
     )
     with pytest.raises(localai_client.LocalAIRequestError, match="exceeds"):
-        localai_client.chat_completion("p", "m", "http://127.0.0.1:8081")
+        localai_client.chat_completion("p", "m", "http://127.0.0.1:8082")
