@@ -32,10 +32,13 @@ from core import (
     load_state,
     notify,
     pipeline_lock,
+    recover_interrupted_jobs,
     resolve_lock_path,
     resolve_secret,
     resolve_state_path,
     save_state,
+    start_job,
+    update_job,
 )
 from pipeline import NoTranscriptAvailableError, process_input
 
@@ -145,6 +148,12 @@ def _run_once_locked(cfg: dict) -> None:
     """Run one playlist pass while holding the shared pipeline lock."""
     state_file = resolve_state_path(cfg)
     state = load_state(state_file)
+    recovered = recover_interrupted_jobs(state)
+    if recovered:
+        save_state(state_file, state)
+        log.warning(
+            "Recovered %d interrupted job(s): %s", len(recovered), ", ".join(recovered)
+        )
     processed = set(state["processed_video_ids"])
 
     try:
@@ -170,10 +179,27 @@ def _run_once_locked(cfg: dict) -> None:
     for item in new_items:
         video_id, title = item["video_id"], item["title"]
         video_url = f"https://www.youtube.com/watch?v={video_id}"
+        job_id = f"youtube:{video_id}"
         log.info("Processing %s (%s)", video_id, title)
 
+        start_job(
+            state,
+            job_id,
+            video_url,
+            {
+                "video_id": video_id,
+                "title": title,
+                "published_at": item["published_at"],
+            },
+        )
+        save_state(state_file, state)
+
+        def update_progress(*, step: str, status: str, **fields) -> None:
+            update_job(state, job_id, step=step, step_status=status, **fields)
+            save_state(state_file, state)
+
         try:
-            process_input(
+            result = process_input(
                 video_url,
                 cfg,
                 item_hint={
@@ -183,10 +209,24 @@ def _run_once_locked(cfg: dict) -> None:
                 },
                 github_token=github_token,
                 bridge_token=bridge_token,
+                progress_callback=update_progress,
             )
             processed.add(video_id)
             state["failed_attempts"].pop(video_id, None)
             state["processed_video_ids"] = sorted(processed)
+            update_job(
+                state,
+                job_id,
+                status="completed",
+                step="note_publish",
+                step_status="completed",
+                result={
+                    "title": result["title"],
+                    "subtitle_path": str(result["subtitle_path"]),
+                    "note_path": str(result["note_path"]),
+                },
+                error=None,
+            )
             save_state(state_file, state)
             log.info("Done with %s.", video_id)
 
@@ -203,6 +243,14 @@ def _run_once_locked(cfg: dict) -> None:
             )
             processed.add(video_id)
             state["processed_video_ids"] = sorted(processed)
+            update_job(
+                state,
+                job_id,
+                status="skipped",
+                step="transcript",
+                step_status="unavailable",
+                error="No transcript available.",
+            )
             save_state(state_file, state)
 
         except Exception:
@@ -211,6 +259,12 @@ def _run_once_locked(cfg: dict) -> None:
 
             attempts = state["failed_attempts"].get(video_id, 0) + 1
             state["failed_attempts"][video_id] = attempts
+            update_job(
+                state,
+                job_id,
+                status="retrying" if attempts < max_retries else "failed",
+                error=err[-2000:],
+            )
             save_state(state_file, state)
 
             if attempts >= max_retries:

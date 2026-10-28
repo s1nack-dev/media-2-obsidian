@@ -44,11 +44,32 @@ def test_state_round_trip_and_defaults(tmp_path):
     assert core.load_state(str(path)) == {
         "processed_video_ids": [],
         "failed_attempts": {},
+        "jobs": {},
     }
     path.write_text(json.dumps({"processed_video_ids": ["a"]}))
     assert core.load_state(str(path))["failed_attempts"] == {}
     core.save_state(str(path), {"processed_video_ids": ["b"]})
     assert json.loads(path.read_text())["processed_video_ids"] == ["b"]
+
+
+def test_job_ledger_recovers_interrupted_job(tmp_path):
+    state = core.load_state(str(tmp_path / "state.json"))
+    job = core.start_job(state, "youtube:abc", "https://youtu.be/abc")
+    assert job["status"] == "running"
+    assert job["steps"]["transcript"] == "running"
+
+    assert core.recover_interrupted_jobs(state) == ["youtube:abc"]
+    job = state["jobs"]["youtube:abc"]
+    assert job["status"] == "retrying"
+    assert job["steps"]["transcript"] == "pending"
+
+
+def test_save_state_is_valid_json_after_atomic_write(tmp_path):
+    path = tmp_path / "runtime" / "state.json"
+    state = core.load_state(str(path))
+    core.start_job(state, "youtube:abc", "https://youtu.be/abc")
+    core.save_state(str(path), state)
+    assert core.load_state(str(path))["jobs"]["youtube:abc"]["status"] == "running"
 
 
 def test_state_path_prefers_container_override(monkeypatch):

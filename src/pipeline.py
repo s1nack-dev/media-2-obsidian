@@ -41,6 +41,7 @@ import urllib.request
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import defusedxml.ElementTree as ET
@@ -977,6 +978,7 @@ def process_input(
     item_hint: dict | None = None,
     github_token: str | None = None,
     bridge_token: str | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict:
     """
     Process a media input through transcription, summarization, and GitHub publication.
@@ -988,6 +990,7 @@ def process_input(
             ``published_at``, or ``video_id``.
         github_token (str | None): Optional pre-resolved GitHub authentication token.
         bridge_token (str | None): Optional pre-resolved bridge service authentication token.
+        progress_callback: Optional callback invoked at durable step boundaries.
 
     Returns:
         dict: Metadata containing ``title``, ``source_type``, ``note_path``, and
@@ -1067,7 +1070,13 @@ def process_input(
     # temp dir (and any scratch download/audio file) is gone past this point;
     # everything needed is captured in local variables above.
 
+    if progress_callback:
+        progress_callback(step="transcript", status="completed")
+
     log.info("Got transcript for %r via %s (%s)", title, source_type, lang)
+
+    if progress_callback:
+        progress_callback(step="summary", status="running")
 
     claude_cfg = cfg.get("claude") or {}
     claude_cmd = claude_cfg.get("command", "claude")
@@ -1079,6 +1088,9 @@ def process_input(
     content_tags = generate_tags_with_claude(
         claude_cmd, transcript_text, claude_oauth_token
     )
+
+    if progress_callback:
+        progress_callback(step="summary", status="completed")
 
     if github_token is None:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
@@ -1102,6 +1114,9 @@ def process_input(
     subtitle_path = subs_dir / f"{slug}.{lang}.{transcript_ext}"
     subtitle_path.write_text(final_srt_text, encoding="utf-8")
 
+    if progress_callback:
+        progress_callback(step="subtitle_publish", status="running")
+
     commit_and_push(
         subs_repo,
         [subtitle_path],
@@ -1110,6 +1125,13 @@ def process_input(
         cfg["github"]["commit_author_email"],
         github_token,
     )
+
+    if progress_callback:
+        progress_callback(
+            step="subtitle_publish",
+            status="completed",
+            subtitle_path=str(subtitle_path),
+        )
 
     subs_owner_repo = re.sub(
         r"^https://github\.com/|\.git$", "", cfg["github"]["subtitles_repo_url"]
@@ -1139,6 +1161,9 @@ def process_input(
         encoding="utf-8",
     )
 
+    if progress_callback:
+        progress_callback(step="note_publish", status="running")
+
     commit_and_push(
         vault_repo,
         [note_path],
@@ -1147,6 +1172,11 @@ def process_input(
         cfg["github"]["commit_author_email"],
         github_token,
     )
+
+    if progress_callback:
+        progress_callback(
+            step="note_publish", status="completed", note_path=str(note_path)
+        )
 
     return {
         "title": title,

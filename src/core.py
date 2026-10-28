@@ -17,6 +17,7 @@ import smtplib
 import socket
 import ssl
 import subprocess
+import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -165,9 +166,11 @@ def load_state(path: str) -> dict:
     p = Path(path)
     if p.exists():
         state = json.loads(p.read_text())
+        state.setdefault("processed_video_ids", [])
         state.setdefault("failed_attempts", {})
+        state.setdefault("jobs", {})
         return state
-    return {"processed_video_ids": [], "failed_attempts": {}}
+    return {"processed_video_ids": [], "failed_attempts": {}, "jobs": {}}
 
 
 def resolve_state_path(cfg: dict) -> str:
@@ -183,7 +186,104 @@ def save_state(path: str, state: dict) -> None:
         path (str): Destination file path.
         state (dict): State data to serialize.
     """
-    Path(path).write_text(json.dumps(state, indent=2))
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=destination.parent, delete=False
+    ) as temporary:
+        json.dump(state, temporary, indent=2)
+        temporary.write("\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+        temporary_path = Path(temporary.name)
+    os.replace(temporary_path, destination)
+    directory_fd = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def utc_now() -> str:
+    """Return a JSON-friendly UTC timestamp for the durable job ledger."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def start_job(
+    state: dict, job_id: str, input_value: str, metadata: dict | None = None
+) -> dict:
+    """Create or restart a job ledger record and mark transcription running."""
+    jobs = state.setdefault("jobs", {})
+    now = utc_now()
+    job = jobs.setdefault(
+        job_id,
+        {
+            "input": input_value,
+            "created_at": now,
+            "attempts": 0,
+            "steps": {
+                "transcript": "pending",
+                "summary": "pending",
+                "subtitle_publish": "pending",
+                "note_publish": "pending",
+            },
+        },
+    )
+    job.update(
+        {
+            "input": input_value,
+            "status": "running",
+            "current_step": "transcript",
+            "updated_at": now,
+            "error": None,
+        }
+    )
+    job["attempts"] = int(job.get("attempts", 0)) + 1
+    job.setdefault("steps", {}).update({"transcript": "running"})
+    if metadata:
+        job["metadata"] = metadata
+    return job
+
+
+def update_job(
+    state: dict,
+    job_id: str,
+    *,
+    status: str | None = None,
+    step: str | None = None,
+    step_status: str | None = None,
+    **fields,
+) -> dict:
+    """Persist one job/step transition in the in-memory state ledger."""
+    job = state.setdefault("jobs", {}).get(job_id)
+    if job is None:
+        raise KeyError(f"Unknown job {job_id!r}")
+    if status is not None:
+        job["status"] = status
+    if step is not None:
+        job["current_step"] = step
+    if step is not None and step_status is not None:
+        job.setdefault("steps", {})[step] = step_status
+    job.update(fields)
+    job["updated_at"] = utc_now()
+    return job
+
+
+def recover_interrupted_jobs(state: dict) -> list[str]:
+    """Mark jobs left running by a crash as retryable for the next worker pass."""
+    recovered = []
+    for job_id, job in state.setdefault("jobs", {}).items():
+        if job.get("status") == "running":
+            step = job.get("current_step")
+            job["status"] = "retrying"
+            job["error"] = (
+                "Worker interrupted before this job reached a terminal state."
+            )
+            job["updated_at"] = utc_now()
+            if step:
+                job.setdefault("steps", {})[step] = "pending"
+            recovered.append(job_id)
+    return recovered
 
 
 @contextlib.contextmanager

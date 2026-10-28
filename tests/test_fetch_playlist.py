@@ -70,6 +70,46 @@ def test_run_once_processes_and_persists(tmp_path, monkeypatch):
     assert json.loads(state.read_text())["processed_video_ids"] == ["v1"]
 
 
+def test_run_once_records_job_steps_and_result(tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    cfg = {
+        "state_file": str(state),
+        "youtube": {"playlist_id": "p"},
+        "github": {"token_op_ref": "x"},
+        "bridge": {"auth_token_op_ref": "y"},
+        "lock_file": str(tmp_path / "lock"),
+    }
+    monkeypatch.setattr(fetch_playlist, "resolve_secret", lambda *args: "token")
+    monkeypatch.setattr(fetch_playlist, "get_youtube_service", lambda cfg: _Service())
+
+    def process_input(*args, **kwargs):
+        kwargs["progress_callback"](step="transcript", status="completed")
+        kwargs["progress_callback"](step="summary", status="completed")
+        kwargs["progress_callback"](
+            step="subtitle_publish", status="completed", subtitle_path="/subs/one.srt"
+        )
+        kwargs["progress_callback"](
+            step="note_publish", status="completed", note_path="/vault/One.md"
+        )
+        return {
+            "title": "One",
+            "subtitle_path": "/subs/one.srt",
+            "note_path": "/vault/One.md",
+        }
+
+    monkeypatch.setattr(fetch_playlist, "process_input", process_input)
+    fetch_playlist.run_once(cfg)
+    job = json.loads(state.read_text())["jobs"]["youtube:v1"]
+    assert job["status"] == "completed"
+    assert job["steps"] == {
+        "transcript": "completed",
+        "summary": "completed",
+        "subtitle_publish": "completed",
+        "note_publish": "completed",
+    }
+    assert job["result"]["note_path"] == "/vault/One.md"
+
+
 def test_run_once_serializes_state_selection(tmp_path, monkeypatch):
     state = tmp_path / "state.json"
     cfg = {
