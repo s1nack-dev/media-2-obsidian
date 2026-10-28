@@ -30,9 +30,16 @@ class _NoRedirect(HTTPRedirectHandler):
 _OPENER = build_opener(ProxyHandler({}), _NoRedirect)
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def _validate_url(base_url: str) -> None:
-    if urlparse(base_url).scheme not in ("http", "https"):
-        raise ValueError("LocalAI URL scheme must be http or https")
+    parts = urlparse(base_url)
+    if parts.scheme == "https":
+        return
+    if parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS:
+        return
+    raise ValueError("LocalAI URL must use https, or http only for 127.0.0.1/localhost")
 
 
 def _headers(api_key: str | None = None) -> dict[str, str]:

@@ -38,7 +38,12 @@ from core import (
     resolve_state_path,
     save_state,
 )
-from pipeline import NoTranscriptAvailableError, process_input
+from pipeline import (
+    check_localai_container_config,
+    resolve_bridge_token,
+    NoTranscriptAvailableError,
+    process_input,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -150,6 +155,7 @@ def _run_once_locked(cfg: dict) -> None:
 
     try:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
+        bridge_token = resolve_bridge_token(cfg)
         localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
         localai_api_key = (
             resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
@@ -187,6 +193,7 @@ def _run_once_locked(cfg: dict) -> None:
                 },
                 github_token=github_token,
                 localai_api_key=localai_api_key,
+                bridge_token=bridge_token,
             )
             processed.add(video_id)
             state["failed_attempts"].pop(video_id, None)
@@ -267,6 +274,7 @@ def main():
         parser.error("--interval must be a positive integer when using --loop")
 
     cfg = load_config(args.config)
+    check_localai_container_config(cfg)
 
     if not args.loop:
         run_once(cfg)

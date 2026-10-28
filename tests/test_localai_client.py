@@ -33,12 +33,12 @@ def test_transcribe_audio_uses_openai_compatible_multipart_endpoint(
 
     monkeypatch.setattr(localai_client._OPENER, "open", fake)
     assert localai_client.transcribe_audio(
-        audio, "parakeet-110m", "http://localai", "secret"
+        audio, "parakeet-110m", "https://localai", "secret"
     ) == (
         "1\n00:00:00,000 --> 00:00:01,000\nHello\n",
         "Hello",
     )
-    assert seen["url"] == "http://localai/v1/audio/transcriptions"
+    assert seen["url"] == "https://localai/v1/audio/transcriptions"
     assert seen["auth"] == "Bearer secret"
     assert "multipart/form-data" in seen["content_type"]
     assert b'name="model"' in seen["body"]
@@ -100,3 +100,12 @@ def test_redirects_are_refused():
         )
         is None
     )
+
+
+def test_plain_http_only_allowed_for_loopback():
+    import pytest
+
+    localai_client._validate_url("http://127.0.0.1:8081")
+    localai_client._validate_url("https://host.tailnet.ts.net")
+    with pytest.raises(ValueError):
+        localai_client._validate_url("http://100.64.0.1:8081")

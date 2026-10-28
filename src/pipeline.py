@@ -99,6 +99,30 @@ def _localai_url(cfg: dict) -> str:
     return os.environ.get("LOCALAI_URL") or cfg["localai"]["url"]
 
 
+def resolve_bridge_token(cfg: dict) -> str | None:
+    """Resolve the bridge token once at startup, only when the bridge is used."""
+    if (cfg.get("transcription") or {}).get("provider", "bridge") != "bridge":
+        return None
+    return resolve_secret("BRIDGE_AUTH_TOKEN", cfg["bridge"]["auth_token_op_ref"])
+
+
+def check_localai_container_config(cfg: dict) -> None:
+    """Fail fast when a container would send LocalAI requests to its own loopback."""
+    uses_localai = (cfg.get("transcription") or {}).get("provider") == "localai" or (
+        cfg.get("ai") or {}
+    ).get("provider") == "localai"
+    if not uses_localai or os.environ.get("LOCALAI_URL"):
+        return
+    if not Path("/.dockerenv").exists():
+        return
+    host = urlparse((cfg.get("localai") or {}).get("url", "")).hostname
+    if host in (None, "127.0.0.1", "localhost", "::1"):
+        raise ValueError(
+            "LocalAI is selected but LOCALAI_URL is unset; inside a container "
+            "localai.url points at the container itself. Set LOCALAI_URL in .env."
+        )
+
+
 def _transcript_label(provider: str) -> str:
     """Filename label for generated transcripts; bridge keeps its parakeet name."""
     return "localai" if provider == "localai" else "parakeet"
@@ -125,17 +149,16 @@ def _summarize_with_localai(
         .read_text()
         .format(transcription=transcript_text[:150000])
     )
-    try:
-        output = localai_client.chat_completion(
-            prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
-        )
-    except localai_client.LocalAIRequestError as exc:
-        log.error("LocalAI summary failed: %s", exc)
-        return "_Summary generation failed._"
+    # Failures raise so playlist jobs are retried instead of publishing a
+    # placeholder note that would never be regenerated.
+    output = localai_client.chat_completion(
+        prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
+    )
     idx = output.find("## SUMMARY")
     if idx == -1:
-        log.warning("LocalAI summary response missing expected heading.")
-        return "_Summary generation failed._"
+        raise localai_client.LocalAIRequestError(
+            "LocalAI summary response missing the '## SUMMARY' heading"
+        )
     return output[idx:]
 
 
@@ -147,13 +170,9 @@ def _generate_tags_with_localai(
         .read_text()
         .format(transcription=transcript_text[:150000])
     )
-    try:
-        output = localai_client.chat_completion(
-            prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
-        )
-    except localai_client.LocalAIRequestError as exc:
-        log.error("LocalAI tag generation failed: %s", exc)
-        return []
+    output = localai_client.chat_completion(
+        prompt, cfg["localai"]["chat_model"], _localai_url(cfg), api_key
+    )
     tags = []
     for line in output.splitlines():
         raw_line = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", line).strip()

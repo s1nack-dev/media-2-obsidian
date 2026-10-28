@@ -926,3 +926,37 @@ def test_invalid_ai_provider_fails_before_transcription(tmp_path):
     }
     with pytest.raises(ValueError, match="ai.provider"):
         pipeline.process_input(media, cfg, localai_api_key="k")
+
+
+def test_localai_summary_failure_raises_for_retry(monkeypatch):
+    monkeypatch.setattr(
+        pipeline.localai_client, "chat_completion", lambda *a, **k: "no heading"
+    )
+    cfg = {"localai": {"url": "http://127.0.0.1:8081", "chat_model": "m"}}
+    with pytest.raises(pipeline.localai_client.LocalAIRequestError):
+        pipeline._summarize_with_localai("t", cfg, None)
+
+
+def test_bridge_token_resolved_only_for_bridge(monkeypatch):
+    monkeypatch.setattr(pipeline, "resolve_secret", lambda *a: "tok")
+    bridge = {
+        "transcription": {"provider": "bridge"},
+        "bridge": {"auth_token_op_ref": "x"},
+    }
+    assert pipeline.resolve_bridge_token(bridge) == "tok"
+    assert (
+        pipeline.resolve_bridge_token({"transcription": {"provider": "localai"}})
+        is None
+    )
+
+
+def test_container_without_localai_url_fails_fast(monkeypatch):
+    monkeypatch.delenv("LOCALAI_URL", raising=False)
+    monkeypatch.setattr(
+        pipeline.Path, "exists", lambda self: str(self) == "/.dockerenv"
+    )
+    cfg = {"ai": {"provider": "localai"}, "localai": {"url": "http://127.0.0.1:8081"}}
+    with pytest.raises(ValueError, match="LOCALAI_URL"):
+        pipeline.check_localai_container_config(cfg)
+    monkeypatch.setenv("LOCALAI_URL", "https://host.tailnet.ts.net")
+    pipeline.check_localai_container_config(cfg)

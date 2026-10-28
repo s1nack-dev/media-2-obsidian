@@ -42,7 +42,13 @@ from core import (
     resolve_secret,
     validate_public_url,
 )
-from pipeline import NoTranscriptAvailableError, detect_input_type, process_input
+from pipeline import (
+    check_localai_container_config,
+    resolve_bridge_token,
+    NoTranscriptAvailableError,
+    detect_input_type,
+    process_input,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,7 +62,12 @@ _job_queue: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE_SIZE)
 MAX_BODY_BYTES = 10_000
 
 
-def _worker(cfg: dict, github_token: str, localai_api_key: str | None) -> None:
+def _worker(
+    cfg: dict,
+    github_token: str,
+    localai_api_key: str | None,
+    bridge_token: str | None = None,
+) -> None:
     """
     Process queued pipeline jobs sequentially and notify configured recipients of their outcomes.
 
@@ -64,6 +75,7 @@ def _worker(cfg: dict, github_token: str, localai_api_key: str | None) -> None:
         cfg (dict): Pipeline and notification configuration.
         github_token (str): Token used for GitHub operations.
         localai_api_key (str | None): Optional LocalAI API key.
+        bridge_token (str | None): Bridge token, when the bridge provider is used.
     """
     lock_path = resolve_lock_path(cfg)
     while True:
@@ -94,6 +106,7 @@ def _worker(cfg: dict, github_token: str, localai_api_key: str | None) -> None:
                     cfg,
                     github_token=github_token,
                     localai_api_key=localai_api_key,
+                    bridge_token=bridge_token,
                 )
             log.info("Done: %s -> %s", result["title"], result["note_path"])
             notify(
@@ -243,6 +256,7 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    check_localai_container_config(cfg)
     webhook_cfg = cfg.get("webhook") or {}
 
     auth_token_ref = webhook_cfg.get("auth_token_op_ref")
@@ -253,6 +267,7 @@ def main():
         sys.exit(1)
     auth_token = resolve_secret("WEBHOOK_AUTH_TOKEN", auth_token_ref)
     github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
+    bridge_token = resolve_bridge_token(cfg)
     localai_api_key_ref = (cfg.get("localai") or {}).get("api_key_op_ref")
     localai_api_key = (
         resolve_secret("LOCALAI_API_KEY", localai_api_key_ref)
@@ -263,7 +278,9 @@ def main():
     port = args.port or webhook_cfg.get("port", 8080)
 
     worker = threading.Thread(
-        target=_worker, args=(cfg, github_token, localai_api_key), daemon=True
+        target=_worker,
+        args=(cfg, github_token, localai_api_key, bridge_token),
+        daemon=True,
     )
     worker.start()
 
