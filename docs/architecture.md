@@ -5,10 +5,10 @@ config keys, secrets, scheduling, and per-file behavior, see [`CLAUDE.md`](../CL
 
 ## 1. Components
 
-The system splits along one hard constraint: `host_bridge.py` and the two modules it
-wraps need to run natively on an Apple Silicon Mac (MLX for transcription, a
-keychain-bound Claude CLI session for summarization). Everything else is plain
-Python with no host dependency, which is what lets it run in a Linux container.
+The system splits along one hard constraint: `host_bridge.py` and its MLX
+transcription backend need to run natively on an Apple Silicon Mac. Claude Code
+runs in the pipeline container with a deployment-injected OAuth token, so the
+Mac is a transcription-only appliance.
 
 ```mermaid
 flowchart TB
@@ -18,13 +18,13 @@ flowchart TB
         pipeline["pipeline.py<br/><i>process_input() + provider resolvers</i>"]
         spotify["spotify_client.py<br/><i>Spotify episode metadata</i>"]
         podcastrss["podcast_rss.py<br/><i>RSS/Podcasting-2.0 transcript discovery</i>"]
-        bridgeclient["bridge_client.py<br/><i>HTTP client</i>"]
+        bridgeclient["bridge_client.py<br/><i>transcription HTTP client</i>"]
+        claude["claude_client.py<br/><i>summarize + tag via Claude CLI</i>"]
         core["core.py<br/><i>config, state, git, notify, SSRF-safe fetch</i>"]
     end
 
     subgraph hostonly["Host-only (native Mac, never containerized)"]
         bridge["host_bridge.py<br/><i>HTTP server on 127.0.0.1</i>"]
-        claude["claude_client.py<br/><i>summarize + tag via Claude CLI</i>"]
         transcribe["transcribe_backend.py<br/><i>Parakeet/MLX</i>"]
     end
 
@@ -40,8 +40,8 @@ flowchart TB
     spotify --> core
     podcastrss --> core
     pipeline --> bridgeclient
+    pipeline --> claude
     bridgeclient -- "HTTP, auth-token-gated" --> bridge
-    bridge --> claude
     bridge --> transcribe
     bridge --> core
     claude -. "claude -p (sandboxed)" .-> claudeCLI(["Claude CLI"])
@@ -263,18 +263,10 @@ sequenceDiagram
     participant GH as GitHub (subtitles + vault repos)
 
     Note over P: ProviderResolution in hand<br/>(title, transcript, published_at, ...)
-    P->>BC: summarize(transcript_text)
-    BC->>HB: POST /summarize
-    HB->>CC: summarize_with_claude()
-    CC-->>HB: ## SUMMARY ...
-    HB-->>BC: summary
-    BC-->>P: summary
-    P->>BC: generate_tags(transcript_text)
-    BC->>HB: POST /tags
-    HB->>CC: generate_tags_with_claude()
-    CC-->>HB: tags
-    HB-->>BC: tags
-    BC-->>P: tags
+    P->>CC: summarize_with_claude(transcript_text)
+    CC-->>P: ## SUMMARY ...
+    P->>CC: generate_tags_with_claude(transcript_text)
+    CC-->>P: tags
     P->>GH: commit transcript (subtitles repo)
     P->>GH: commit markdown note (vault repo, extra_frontmatter merged in)
     P-->>P: return {title, source_type, note_path, subtitle_path}

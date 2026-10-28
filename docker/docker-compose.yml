@@ -2,11 +2,9 @@
 # mode), pipeline-fetch (playlist polling, fetch_playlist.py --loop).
 #
 # NOT containerized: host_bridge.py - it needs Parakeet/MLX (Metal/Neural
-# Engine access, no Linux wheels) and the Claude CLI's subscription OAuth
-# (tied to this Mac's keychain), neither of which a container can do. Run
-# it natively (see launchd/) before starting these services - the
-# pipeline containers call it over HTTP via host.docker.internal and will
-# fail every job until it's up.
+# Engine access, no Linux wheels). Claude Code runs inside the pipeline image
+# using CLAUDE_CODE_OAUTH_TOKEN. For a remote Mac, set BRIDGE_URL to its private
+# Tailscale Serve HTTPS URL; host.docker.internal is only for Docker Desktop.
 #
 # No 1Password CLI/Service Account inside these containers: GITHUB_TOKEN,
 # BRIDGE_AUTH_TOKEN, and WEBHOOK_AUTH_TOKEN are resolved on the HOST
@@ -61,6 +59,7 @@ services:
       args:
         PIPELINE_UID: ${PIPELINE_UID:-1000}
         PIPELINE_GID: ${PIPELINE_GID:-1000}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:?set an exact validated version}
     image: youtube-obsidian-pipeline
     user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"
     restart: unless-stopped
@@ -69,6 +68,8 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
       - WEBHOOK_AUTH_TOKEN=${WEBHOOK_AUTH_TOKEN}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
     volumes:
       - ../config.yaml:/app/config.yaml:ro
@@ -86,6 +87,7 @@ services:
       args:
         PIPELINE_UID: ${PIPELINE_UID:-1000}
         PIPELINE_GID: ${PIPELINE_GID:-1000}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:?set an exact validated version}
     image: youtube-obsidian-pipeline
     user: "${PIPELINE_UID:-1000}:${PIPELINE_GID:-1000}"
     restart: unless-stopped
@@ -93,6 +95,8 @@ services:
     environment:
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - BRIDGE_AUTH_TOKEN=${BRIDGE_AUTH_TOKEN}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - BRIDGE_URL=${BRIDGE_URL:-http://host.docker.internal:8081}
       - PIPELINE_LOCK_FILE=/app/.pipeline-runtime/pipeline.lock
       - PIPELINE_STATE_FILE=/app/.pipeline-runtime/state.json
     volumes:

@@ -12,15 +12,13 @@ Processes ONE input at a time:
      link (Spotify episodes, via podcast_rss.py), a sidecar .srt file (local
      files), otherwise sends audio to host_bridge.py for transcription
      (Parakeet/MLX - can't run in this container, see bridge_client.py).
-  3. Summarizes the transcript, also via host_bridge.py (claude -p, host
-     subscription auth - also can't run in this container).
+  3. Summarizes and tags the transcript locally with Claude Code (the
+     container receives its OAuth token through the environment).
   4. Commits the transcript file to your subtitles GitHub repo.
   5. Commits a new Obsidian markdown note to your vault GitHub repo.
 
-This module itself has no MLX/parakeet or claude-CLI dependency - it's
-meant to run in the pipeline container. Only host_bridge.py (run natively
-on the Mac) needs those. See CLAUDE.md's "Webhook mode" / "Containerized
-deployment" sections for the full architecture.
+This module has no MLX/parakeet dependency. In the Coolify image it does
+include Claude Code; only host_bridge.py on the remote Mac needs MLX.
 
 Usable two ways:
   - Standalone CLI: `python pipeline.py --input <path-or-url> --config config.yaml`
@@ -43,11 +41,13 @@ import urllib.request
 from dataclasses import dataclass
 from difflib import get_close_matches
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 import defusedxml.ElementTree as ET
 
 import bridge_client
+from claude_client import generate_tags_with_claude, summarize_with_claude
 import podcast_rss
 import spotify_client
 from core import (
@@ -83,6 +83,18 @@ DIRECT_MEDIA_EXTENSIONS = {
     ".m4a",
     ".flac",
 }
+
+
+def _resolve_claude_oauth_token(cfg: dict) -> str | None:
+    """Resolve Claude Code auth in the pipeline trust zone only."""
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        return token
+    oauth_token_ref = (cfg.get("claude") or {}).get("oauth_token_op_ref")
+    if oauth_token_ref:
+        return resolve_secret("CLAUDE_CODE_OAUTH_TOKEN", oauth_token_ref)
+    return None
+
 
 # SSRF protection: explicit allowlist of trusted extractors for yt-dlp.
 # Excludes 'generic' extractor which can fetch arbitrary embedded URLs.
@@ -966,6 +978,7 @@ def process_input(
     item_hint: dict | None = None,
     github_token: str | None = None,
     bridge_token: str | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict:
     """
     Process a media input through transcription, summarization, and GitHub publication.
@@ -977,6 +990,7 @@ def process_input(
             ``published_at``, or ``video_id``.
         github_token (str | None): Optional pre-resolved GitHub authentication token.
         bridge_token (str | None): Optional pre-resolved bridge service authentication token.
+        progress_callback: Optional callback invoked at durable step boundaries.
 
     Returns:
         dict: Metadata containing ``title``, ``source_type``, ``note_path``, and
@@ -1056,12 +1070,27 @@ def process_input(
     # temp dir (and any scratch download/audio file) is gone past this point;
     # everything needed is captured in local variables above.
 
+    if progress_callback:
+        progress_callback(step="transcript", status="completed")
+
     log.info("Got transcript for %r via %s (%s)", title, source_type, lang)
 
-    summary = bridge_client.summarize(transcript_text, bridge_url, bridge_token)
-    content_tags = bridge_client.generate_tags(
-        transcript_text, bridge_url, bridge_token
+    if progress_callback:
+        progress_callback(step="summary", status="running")
+
+    claude_cfg = cfg.get("claude") or {}
+    claude_cmd = claude_cfg.get("command", "claude")
+    # Coolify injects this directly. Native deployments can retain the
+    # 1Password reference for compatibility, but the remote Mac bridge never
+    # receives this credential.
+    claude_oauth_token = _resolve_claude_oauth_token(cfg)
+    summary = summarize_with_claude(claude_cmd, transcript_text, claude_oauth_token)
+    content_tags = generate_tags_with_claude(
+        claude_cmd, transcript_text, claude_oauth_token
     )
+
+    if progress_callback:
+        progress_callback(step="summary", status="completed")
 
     if github_token is None:
         github_token = resolve_secret("GITHUB_TOKEN", cfg["github"]["token_op_ref"])
@@ -1085,6 +1114,9 @@ def process_input(
     subtitle_path = subs_dir / f"{slug}.{lang}.{transcript_ext}"
     subtitle_path.write_text(final_srt_text, encoding="utf-8")
 
+    if progress_callback:
+        progress_callback(step="subtitle_publish", status="running")
+
     commit_and_push(
         subs_repo,
         [subtitle_path],
@@ -1093,6 +1125,13 @@ def process_input(
         cfg["github"]["commit_author_email"],
         github_token,
     )
+
+    if progress_callback:
+        progress_callback(
+            step="subtitle_publish",
+            status="completed",
+            subtitle_path=str(subtitle_path),
+        )
 
     subs_owner_repo = re.sub(
         r"^https://github\.com/|\.git$", "", cfg["github"]["subtitles_repo_url"]
@@ -1122,6 +1161,9 @@ def process_input(
         encoding="utf-8",
     )
 
+    if progress_callback:
+        progress_callback(step="note_publish", status="running")
+
     commit_and_push(
         vault_repo,
         [note_path],
@@ -1130,6 +1172,11 @@ def process_input(
         cfg["github"]["commit_author_email"],
         github_token,
     )
+
+    if progress_callback:
+        progress_callback(
+            step="note_publish", status="completed", note_path=str(note_path)
+        )
 
     return {
         "title": title,

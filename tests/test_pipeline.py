@@ -3,6 +3,32 @@ import pytest
 import pipeline
 
 
+def test_claude_oauth_prefers_container_environment(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "container-token")
+    monkeypatch.setattr(
+        pipeline,
+        "resolve_secret",
+        lambda *args: pytest.fail("should not read 1Password"),
+    )
+    assert (
+        pipeline._resolve_claude_oauth_token(
+            {"claude": {"oauth_token_op_ref": "op://ref"}}
+        )
+        == "container-token"
+    )
+
+
+def test_claude_oauth_uses_native_secret_reference(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(pipeline, "resolve_secret", lambda env, ref: f"{env}:{ref}")
+    assert (
+        pipeline._resolve_claude_oauth_token(
+            {"claude": {"oauth_token_op_ref": "op://ref"}}
+        )
+        == "CLAUDE_CODE_OAUTH_TOKEN:op://ref"
+    )
+
+
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -98,9 +124,9 @@ def test_process_local_sidecar_end_to_end(tmp_path, monkeypatch):
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["testing"]
     )
     result = pipeline.process_input(
         media, cfg, github_token="token", bridge_token="bridge"
@@ -500,9 +526,9 @@ def test_process_input_spotify_rss_transcript_bypasses_audio_download(
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline.spotify_client,
@@ -564,9 +590,9 @@ def test_process_input_spotify_no_transcript_falls_back_to_parakeet(
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline.spotify_client,
@@ -735,10 +761,8 @@ def test_process_generic_link_end_to_end_via_ytdlp_subs(tmp_path, monkeypatch):
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
-    monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["video"]
-    )
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "generate_tags_with_claude", lambda *args: ["video"])
     monkeypatch.setattr(pipeline, "validate_public_url", lambda url: None)
     monkeypatch.setattr(
         pipeline, "fetch_title_via_ytdlp", lambda url, **kwargs: "Vimeo Talk"
@@ -790,9 +814,9 @@ def test_process_input_overcast_source_type_and_redirect_url(tmp_path, monkeypat
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["podcast"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["podcast"]
     )
     monkeypatch.setattr(
         pipeline,
@@ -838,9 +862,9 @@ def test_process_input_note_filename_preserves_exact_title(tmp_path, monkeypatch
         lambda *args: Path(args[1]).mkdir(parents=True, exist_ok=True) or Path(args[1]),
     )
     monkeypatch.setattr(pipeline, "commit_and_push", lambda *args: None)
-    monkeypatch.setattr(pipeline.bridge_client, "summarize", lambda *args: "summary")
+    monkeypatch.setattr(pipeline, "summarize_with_claude", lambda *args: "summary")
     monkeypatch.setattr(
-        pipeline.bridge_client, "generate_tags", lambda *args: ["testing"]
+        pipeline, "generate_tags_with_claude", lambda *args: ["testing"]
     )
 
     result = pipeline.process_input(

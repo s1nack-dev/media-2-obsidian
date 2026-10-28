@@ -336,7 +336,13 @@ The timer runs every 30 minutes by default (`OnUnitActiveSec=30min` in
 
 ## 9. Optional: containerized deployment + webhook mode
 
-Everything except Parakeet and the Claude CLI can run in Docker:
+For a Coolify-hosted pipeline with a private, remote Apple Silicon Mac for
+transcription, use the dedicated [Coolify + remote Mac runbook](docs/coolify-remote-mac.md).
+That deployment runs Claude Code in the container, keeps the Mac
+transcription-only, and connects the two through host-installed Tailscale.
+
+Everything except Parakeet can run in Docker; Claude Code is installed in the
+pipeline image and authenticated with a non-interactive OAuth token:
 `server.py` (webhook mode, `POST /process` triggers a single URL/file the
 same way `pipeline.py --input` does) and `fetch_playlist.py --loop`
 (playlist polling, containers have no external scheduler to reach them so
@@ -345,11 +351,10 @@ containers, alongside `cloudflared` for exposing `server.py` on a public
 URL via [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/).
 
 **Why not everything:** Parakeet needs direct Metal/Neural Engine access
-(Docker Desktop's Linux VM can't provide that), and the Claude CLI's
-subscription login is tied to this Mac's keychain/session (a container
-can't share it). Both stay behind `host_bridge.py`, a small HTTP service
-that runs natively on the Mac — the containers call it over HTTP via
-`host.docker.internal` instead of doing either in-process. **Start
+(Docker Desktop's Linux VM can't provide that). It stays behind
+`host_bridge.py`, a small transcription-only HTTP service that runs natively
+on the Mac; the containers call it over HTTP. Claude summaries and tags run
+inside the pipeline container. **Start
 `host_bridge.py` before the containers** — they'll fail every job with a
 connection error to `host.docker.internal` until it's up.
 

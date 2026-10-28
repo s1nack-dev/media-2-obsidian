@@ -22,3 +22,12 @@ __pycache__/
 
 # AI
 /.proxyai/*
+/youtube-obsidian-pipeline/token.json
+/youtube-obsidian-pipeline/.pipeline-runtime/state.json
+/youtube-obsidian-pipeline/state.json
+/macos/transcription.sb.tmpl
+/youtube-obsidian-pipeline/.pipeline-runtime/pipeline.lock
+/youtube-obsidian-pipeline/host_bridge.log
+/youtube-obsidian-pipeline/config.yaml
+/youtube-obsidian-pipeline/.env
+/youtube-obsidian-pipeline/.host_bridge.pid
